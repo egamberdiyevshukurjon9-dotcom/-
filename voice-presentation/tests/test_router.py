@@ -95,9 +95,86 @@ class RouterTests(unittest.TestCase):
         self.router.handle(Command("next"))
         self.assertEqual(self.backend.current, 2)
 
-    def test_exit_sets_flag(self):
+    def test_exit_needs_confirmation_by_default(self):
+        self.assertIn("тасдиқланг", self.router.handle(Command("exit")))
+        self.assertFalse(self.router.should_exit)
+        self.clock.now += 2
+        self.router.handle(Command("confirm_yes"))
+        self.assertTrue(self.router.should_exit)
+
+    def test_saying_exit_twice_confirms(self):
+        self.router.handle(Command("exit"))
+        self.clock.now += 2
         self.router.handle(Command("exit"))
         self.assertTrue(self.router.should_exit)
+
+    def test_confirmation_can_be_cancelled_and_expires(self):
+        self.router.handle(Command("exit"))
+        self.clock.now += 2
+        self.assertIn("бекор", self.router.handle(Command("confirm_no")))
+        self.clock.now += 2
+        self.router.handle(Command("exit"))             # қайтадан сўрайди
+        self.assertFalse(self.router.should_exit)
+        self.clock.now += 10                            # 6 сония ўтди — тасдиқ кучини йўқотди
+        self.assertIsNone(self.router.handle(Command("confirm_yes")))
+        self.assertFalse(self.router.should_exit)
+
+    def test_yes_and_no_are_ignored_when_nothing_is_pending(self):
+        # "ha" оддий нутқда ҳам учрайди: тасдиқ кутилмаса ҳеч нима қилмайди
+        self.assertIsNone(self.router.handle(Command("confirm_yes")))
+        self.assertIsNone(self.router.handle(Command("confirm_no")))
+        self.assertFalse(self.router.should_exit)
+
+    def test_exit_without_confirmation_when_disabled(self):
+        router = CommandRouter(self.backend, cooldown=1.0, clock=self.clock, confirm_exit=False)
+        router.handle(Command("exit"))
+        self.assertTrue(router.should_exit)
+
+    def test_bookmarks(self):
+        self.assertIn("Белги қўйилмаган", self.router.handle(Command("to_mark")))
+        self.clock.now += 2
+        self.router.handle(Command("goto", 4))
+        self.clock.now += 2
+        self.assertIn("4-слайд белгиланди", self.router.handle(Command("mark")))
+        self.clock.now += 2
+        self.router.handle(Command("first"))
+        self.clock.now += 2
+        self.assertIn("4-слайд", self.router.handle(Command("to_mark")))
+        self.assertEqual(self.backend.current, 4)
+
+    def test_manual_commands_bypass_cooldown_pause_and_confirmation(self):
+        self.router.handle(Command("pause_listen"))
+        self.assertIsNone(self.router.handle(Command("next")))            # овоз бўғиқ
+        self.assertIsNotNone(self.router.handle(Command("next", manual=True)))   # телефон ишлайди
+        self.assertIsNotNone(self.router.handle(Command("next", manual=True)))   # кетма-кет босиш
+        self.assertEqual(self.backend.current, 3)
+        self.router.handle(Command("exit", manual=True))
+        self.assertTrue(self.router.should_exit)                          # телефон тасдиқи ўзида
+
+    def test_push_to_talk_gate(self):
+        allowed = {"yes": False}
+        router = CommandRouter(self.backend, cooldown=1.0, clock=self.clock,
+                               gate=lambda moment: allowed["yes"])
+        self.assertIsNone(router.handle(Command("next", None, 50.0)))
+        self.assertEqual(self.backend.current, 1)
+        allowed["yes"] = True
+        self.assertIsNotNone(router.handle(Command("next", None, 52.0)))
+        self.assertEqual(self.backend.current, 2)
+        # телефон пульти тугмасиз ҳам ишлайди
+        allowed["yes"] = False
+        self.assertIsNotNone(router.handle(Command("next", manual=True)))
+
+    def test_report_uses_the_session_log(self):
+        from analytics import SessionLog
+        session = SessionLog(clock=self.clock)
+        router = CommandRouter(self.backend, cooldown=1.0, clock=self.clock, session=session)
+        router.handle(Command("next"))
+        self.clock.now += 2
+        router.handle(Command("next", manual=True))
+        text = router.handle(Command("report"))
+        self.assertIn("next ×2", text)
+        self.assertIn("Телефон пультидан: 1", text)
+        self.assertIn("Ҳисобот ўчирилган", CommandRouter(self.backend, clock=self.clock).handle(Command("report")))
 
     def test_show_not_running(self):
         self.backend.exit_show()

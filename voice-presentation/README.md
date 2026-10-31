@@ -28,6 +28,35 @@ python tools/build_flash.py            # dist/VoicePresentation-Flash/ ва .zip
 python tools/build_flash.py --no-models   # моделларсиз, тез
 ```
 
+## Янги имкониятлар (манбалар асосида)
+
+Қуйидаги ғоялар фойдаланувчи келтирган мақолалар рўйхатидаги тавсифлардан олинган. Мақолаларнинг
+**ўзини ўқиб чиқмадим** ва уларнинг рақамларини (90,28%, 95,3%, 96,4%) тасдиқламадим; улар бу
+лойиҳанинг аниқлиги эмас. Фақат ғоялар олинган:
+
+| Ғоя (манба тавсифи) | Бизда қандай амалга ошди |
+|---|---|
+| Смарт-уйда овозли буйруқни матн орқали тасниф қилиш, аниқликни ўлчаш | `--calibrate` / `KALIBROVKA.bat`: ҳар буйруқ ва мотор бўйича аниқлик ҳисоботи, такрорланувчи хатоларни шахсий алиас қилиб ўрганиш (`learned.json`) |
+| Овозли ёрдамчи + маълумот таҳлили (Industry 5.0, "augmented intelligence") | Сессия ҳисоботи: слайд вақтлари, буйруқлар, таниш статистикаси (JSON/CSV/HTML), «hisobot» буйруғи |
+| Овозли сигналларни HTTP REST API орқали узатиш, масофадан бошқариш (IFTTT, Raspberry Pi) | `remote.py`: телефон пульти ва REST API (`PULT.bat`), токен билан ҳимояланган |
+| Ўзбек тили учун алоҳида ёндашув, диалог бошқаруви (call-center ёрдамчиси) | Лотин/кирил/рус/инглиз ва ўзбекча сонлар; хавфли буйруққа тасдиқ («chiqish» → «ha»); белгилар (bookmark) |
+
+### Манбалар ҳолати (текшириш натижаси)
+
+Текшириш учун веб-қидирув ишлатилди; мақолаларнинг ўзини очиб бўлмади (сайтлар тармоқ рўйхатида йўқ).
+Илмий ишда ҳавола қилишдан олдин **ўзингиз DOI ва сарлавҳани текширинг**:
+
+- *Augmented intelligence with voice assistance and automated machine learning in Industry 5.0* — қидирув
+  **топди**: Bousdekis ва ҳаммуаллифлар, *Frontiers in Artificial Intelligence*, 2025, DOI
+  `10.3389/frai.2025.1538840` (PMC11913813). 95,3% рақами текширилмади.
+- *Recognition of Human Actions through Speech or Voice Using Machine Learning Techniques* — шу сарлавҳа
+  билан мақола **топилмади**; ScienceDirect ҳаволасидаги `/org/science/` йўли одатий эмас.
+- *Short Research on Voice Control System Based on Artificial Intelligence Assistant* — шу сарлавҳа
+  билан **топилмади**.
+- *Voice-Controlled Intelligent Personal Assistant for Call-Center Automation in the Uzbek Language*
+  (MDPI Electronics, "UzAssistant", Deep Speech 2 / Tacotron 2, 96,4%) — **топилмади**. Ўзбек тилидаги
+  call-center ёрдамчилари бўйича фақат тижорат лойиҳалари (масалан, Muxlisa) чиқди.
+
 ## Тузилиш
 
 ```
@@ -39,6 +68,10 @@ app/                    дастур (Python 3.12, ташқи кутубхона
   audio.py                микрофон: қайта улаш, жимликни аниқлаш, жумлаларга бўлиш
   backends.py             PowerPoint (COM), тугмалар симуляцияси, синов режими
   winkeys.py              ctypes SendInput (pyautogui ўрнига)
+  analytics.py            сессия ҳисоботи (слайд вақтлари, буйруқлар статистикаси)
+  remote.py               телефон пульти ва REST API (http.server, токен)
+  calibrate.py            аниқликни ўлчаш ва шахсий алиасларни ўрганиш
+  hotkeys.py              push-to-talk (GetAsyncKeyState)
 flash/                  флешкага тушадиган шаблонлар: START.bat, TEST.bat, config.json ...
 tools/build_flash.py    пакетни йиғиш; tools/ci_smoke.py — Windows'да текшириш
 tests/                  юнит-тестлар

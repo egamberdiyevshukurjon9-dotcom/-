@@ -42,7 +42,7 @@ class BatchFileTests(unittest.TestCase):
     def test_there_are_scripts(self):
         names = {p.name for p in BATS}
         self.assertTrue({"START.bat", "TEST.bat", "TEST_VOICE.bat", "INSTALL_AUTOSTART.bat",
-                         "UNINSTALL_AUTOSTART.bat"} <= names, names)
+                         "UNINSTALL_AUTOSTART.bat", "PULT.bat", "KALIBROVKA.bat", "HISOBOT.bat"} <= names, names)
 
     def test_ascii_and_crlf(self):
         for path in BATS:

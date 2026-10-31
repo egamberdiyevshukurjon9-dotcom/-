@@ -8,7 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Тайёр пакетни GitHub Release сифатида эълон қилиш"
+        description: "Тайёр пакетни GitHub Release'га жойлаш (стандарт: фақат сиз кўрадиган қoralама - draft)"
+        type: boolean
+        default: false
+      publish:
+        description: "Release'ни ҳамма учун очиқ эълон қилиш (стандарт: йўқ, draft қолади)"
         type: boolean
         default: false
 
@@ -71,18 +75,20 @@ jobs:
           "Voices: " + (($synth.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }) -join ", ")
           $format = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
           $cases = @(
-            @{ file = "next";   text = "next slide";                              expect = "next" },
-            @{ file = "next2";  text = "next";                                    expect = "next" },
-            @{ file = "prev";   text = "previous slide";                          expect = "prev" },
-            @{ file = "black";  text = "black screen";                            expect = "black" },
-            @{ file = "goto";   text = "go to slide five";                        expect = "goto:5" },
-            @{ file = "exit";   text = "exit";                                    expect = "exit" },
+            @{ file = "next";   text = "next slide";                              expect = "next";   calib = "next_1" },
+            @{ file = "next2";  text = "next";                                    expect = "next";   calib = "next_2" },
+            @{ file = "prev";   text = "previous slide";                          expect = "prev";   calib = "prev_1" },
+            @{ file = "black";  text = "black screen";                            expect = "black";  calib = "black_1" },
+            @{ file = "goto";   text = "go to slide five";                        expect = "goto:5"; calib = "goto5_1" },
+            @{ file = "exit";   text = "exit";                                    expect = "exit";   calib = "exit_1" },
             @{ file = "n1";     text = "the weather is nice today";               expect = "none" },
             @{ file = "n2";     text = "let us look at the next example";         expect = "none" },
             @{ file = "n3";     text = "he went to the next room and closed the door"; expect = "none" },
             @{ file = "n4";     text = "this slide shows the results of the experiment"; expect = "none" }
           )
           $failed = 0
+          $calibDir = Join-Path $env:RUNNER_TEMP "calib"
+          New-Item -ItemType Directory -Force $calibDir | Out-Null
           $py = $env:PY
           $script = "$env:PKG\VoiceApp\app\presentation_voice.py"
           foreach ($case in $cases) {
@@ -90,6 +96,7 @@ jobs:
             $synth.SetOutputToWaveFile($wav, $format)
             $synth.Speak($case.text)
             $synth.SetOutputToNull()
+            if ($case.calib) { Copy-Item $wav (Join-Path $calibDir ("{0}.wav" -f $case.calib)) }
             Write-Host "--- '$($case.text)' -> expect $($case.expect)   [grammar mode]"
             & $py -X utf8 -B $script --wav $wav --expect $case.expect
             if ($LASTEXITCODE -ne 0) { $failed++ }
@@ -105,6 +112,10 @@ jobs:
         run: |
           %PY% -X utf8 -B %PKG%\VoiceApp\app\presentation_voice.py --wav %RUNNER_TEMP%\next.wav --expect next --engine google --lang en-US
           %PY% -X utf8 -B %PKG%\VoiceApp\app\presentation_voice.py --wav %RUNNER_TEMP%\goto.wav --expect goto:5 --engine google --lang en-US
+
+      - name: Calibration on speech files (accuracy report; fails below 80%)
+        shell: cmd
+        run: '%PY% -X utf8 -B %PKG%\VoiceApp\app\presentation_voice.py --calibrate-wav %RUNNER_TEMP%\calib --min-accuracy 0.8'
 
       - name: START.bat chain (batch file -> embedded Python -> arguments)
         shell: cmd
@@ -147,6 +158,50 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "UNINSTALL_AUTOSTART.bat exit code $LASTEXITCODE" }
           if ((Test-Path $target) -or (Test-Path $launcher)) { throw "uninstall left files behind" }
 
+      - name: Build the single-file self-extracting installer (7-Zip SFX)
+        id: sfx
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $seven = "C:\Program Files\7-Zip"
+          if (-not (Test-Path "$seven\7z.sfx")) { Get-ChildItem $seven | Out-Host; throw "7z.sfx module not found" }
+          $dist = (Resolve-Path "voice-presentation\dist").Path
+          $archive = Join-Path $dist "package.7z"
+          Remove-Item $archive -ErrorAction SilentlyContinue
+          Push-Location $env:PKG
+          & "$seven\7z.exe" a -t7z -m0=lzma2 -mx=5 -mmt=on $archive ".\*" | Select-Object -Last 3
+          if ($LASTEXITCODE -ne 0) { throw "7z a failed: $LASTEXITCODE" }
+          Pop-Location
+          $out = Join-Path $dist "VoicePresentation-Setup.exe"
+          $output = [System.IO.File]::Create($out)
+          foreach ($part in @("$seven\7z.sfx", (Resolve-Path "voice-presentation\tools\sfx_config.txt").Path, $archive)) {
+            $input = [System.IO.File]::OpenRead($part); $input.CopyTo($output); $input.Dispose()
+          }
+          $output.Dispose()
+          Remove-Item $archive
+          "{0:N0} MB: {1}" -f ((Get-Item $out).Length / 1MB), $out
+          & "$seven\7z.exe" t $out | Select-Object -Last 4
+          if ($LASTEXITCODE -ne 0) { throw "SFX integrity check failed" }
+          # ҳақиқий ишга тушириш: жимжит чиқариш (GUI сўрамасдан)
+          $test = Join-Path $env:RUNNER_TEMP "sfx_test"
+          $process = Start-Process -FilePath $out -ArgumentList @("-y", "-gm2", "-o`"$test`"") -PassThru
+          if (-not $process.WaitForExit(300000)) { $process.Kill(); throw "SFX did not finish in 300 s" }
+          "SFX exit code: $($process.ExitCode)"
+          foreach ($needed in @("START.bat", "PULT.bat", "VoiceApp\runtime\python.exe", "VoiceApp\models\uz\am\final.mdl", "VoiceApp\app\presentation_voice.py")) {
+            if (-not (Test-Path (Join-Path $test $needed))) { throw "not extracted: $needed" }
+          }
+          & (Join-Path $test "VoiceApp\runtime\python.exe") -X utf8 -B (Join-Path $test "VoiceApp\app\presentation_voice.py") --wav (Join-Path $env:RUNNER_TEMP "next.wav") --expect next
+          if ($LASTEXITCODE -ne 0) { throw "recognition from the SFX-extracted copy failed" }
+
+      - name: Upload the single-file installer
+        if: steps.sfx.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoicePresentation-Setup-exe
+          path: voice-presentation/dist/VoicePresentation-Setup.exe
+          compression-level: 0
+          retention-days: 30
+
       - name: Upload the flash package (the downloaded zip is extracted straight onto the flash drive)
         if: always()
         uses: actions/upload-artifact@v4
@@ -167,12 +222,22 @@ jobs:
         with:
           name: VoicePresentation-Flash
           path: VoicePresentation-Flash
-      - name: Publish release
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: VoicePresentation-Setup-exe
+          path: setup
+      - name: Create the release (draft unless "publish" is ticked)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           zip -r -q VoicePresentation-Flash.zip VoicePresentation-Flash
-          gh release create "flash-${{ github.run_number }}" VoicePresentation-Flash.zip \
+          files="VoicePresentation-Flash.zip"
+          if [ -f setup/VoicePresentation-Setup.exe ]; then files="setup/VoicePresentation-Setup.exe $files"; fi
+          draft="--draft"
+          if [ "${{ inputs.publish }}" = "true" ]; then draft=""; fi
+          gh release create "flash-${{ github.run_number }}" $files $draft \
+            --target "${{ github.sha }}" \
             --repo "${{ github.repository }}" \
-            --title "Флешка пакети #${{ github.run_number }}" \
-            --notes "Архивни очиб, ичидаги ҳамма нарсани флешкага нусхаланг. START.bat — ишга тушириш."
+            --title "Flash package #${{ github.run_number }}" \
+            --notes "VoicePresentation-Setup.exe (bitta fayl): fleshkaga nusxalang va ikki marta bosing. Zip: ochib, ichidagi hamma narsani fleshkaga nusxalang. START.bat - ishga tushirish."

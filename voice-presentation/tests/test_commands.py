@@ -73,6 +73,9 @@ class ParserTests(unittest.TestCase):
             "yordam": "help", "holat": "status", "vaqt": "status", "izoh": "notes",
             "mundarija": "outline", "avtomatik": "auto_on", "qolda": "auto_off",
             "avtomatikni o'chir": "auto_off",
+            "belgila": "mark", "eslab qol": "mark", "belgiga qayt": "to_mark", "belgiga": "to_mark",
+            "hisobot": "report", "ha": "confirm_yes", "yo'q": "confirm_no", "bekor": "confirm_no",
+            "ekranni yoq": "unblank", "go to mark": "to_mark",
         }
         for text, expected in cases.items():
             self.assertEqual(self.intent(text), expected, text)
@@ -91,6 +94,9 @@ class ParserTests(unittest.TestCase):
     def test_auto_seconds(self):
         self.assertEqual(self.parser.parse(["avtomatik 20 soniya"]), Command("auto_on", 20))
         self.assertEqual(self.parser.parse(["avto"]), Command("auto_on", None))
+
+    def test_manual_flag_does_not_affect_equality(self):
+        self.assertEqual(Command("next", None, None, True), Command("next"))
 
     def test_ordinary_speech_is_ignored(self):
         for text in [

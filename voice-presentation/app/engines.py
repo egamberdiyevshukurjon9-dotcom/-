@@ -149,6 +149,7 @@ class VoskEngine:
         self.recognizers: Dict[str, object] = {}
         self.report: Dict[str, dict] = {}
         self._stop = threading.Event()
+        self.on_heard: Optional[Callable[[List[str], Optional[Command]], None]] = None
 
     def load(self) -> None:
         if self._vosk is None:
@@ -224,7 +225,11 @@ class VoskEngine:
         # Битта овозга бир нечта модель турлича буйруқ қайтариши мумкин (масалан, рус модели
         # ўзбекча сўзни "назад" деб эшитса). Фақат энг устувор модельники (config тартиби) олинади.
         chosen = None
-        for language, texts, command in self._decode(block):
+        outcomes = self._decode(block)
+        if outcomes and self.on_heard:  # ҳисобот: нечта жумла эшитилди, нечтаси буйруқ бўлди
+            first = next((o for o in outcomes if o[2]), outcomes[0])
+            self.on_heard(first[1], first[2])
+        for language, texts, command in outcomes:
             if command and chosen is None:
                 chosen = command
                 log.info("Эшитилди [%s]: «%s»", language, texts[0])
@@ -264,6 +269,7 @@ class GoogleEngine:
         self._stop = threading.Event()
         self._continuing = False
         self._last_net_error = 0.0
+        self.on_heard: Optional[Callable[[List[str], Optional[Command]], None]] = None
 
     def load(self) -> None:
         if self.sr is None:
@@ -316,8 +322,10 @@ class GoogleEngine:
             except Exception as error:
                 log.error("Google таниш хатоси: %s", error)
 
-    def recognize(self, segment) -> None:
-        audio = self.sr.AudioData(segment.audio, RATE, 2)
+    def transcribe(self, audio_bytes: bytes):
+        """Google'дан матн вариантларини олади: [(тил, [матн, ...]), ...]. Интернет йўқ бўлса — None."""
+        audio = self.sr.AudioData(audio_bytes, RATE, 2)
+        heard = []
         for language in self.config["languages"]:
             try:
                 result = self.recognizer.recognize_google(audio, language=language, show_all=True)
@@ -328,18 +336,28 @@ class GoogleEngine:
                 if time.monotonic() - self._last_net_error > 30:
                     log.warning("Интернет билан алоқа йўқ — Google овозни танимаяпти")
                     self._last_net_error = time.monotonic()
-                return
+                return None
             alternatives = result.get("alternative", []) if isinstance(result, dict) else []
             texts = [a["transcript"] for a in alternatives if a.get("transcript")]
-            if not texts:
-                continue
+            if texts:
+                heard.append((language, texts))
+        return heard
+
+    def recognize(self, segment) -> None:
+        heard = self.transcribe(segment.audio)
+        for language, texts in heard or []:
             command = self.parser.parse(texts)
             if command:
                 log.info("Эшитилди [google %s]: «%s»", language, texts[0])
+                if self.on_heard:
+                    self.on_heard(texts, command)
                 self.emit(replace(command, at=segment.stamp))
                 return
+        if heard:
+            if self.on_heard:
+                self.on_heard(heard[0][1], None)
             if self.config.get("verbose"):
-                log.info("Эшитилди [google] (буйруқ эмас): «%s»", texts[0])
+                log.info("Эшитилди [google] (буйруқ эмас): «%s»", heard[0][1][0])
 
 
 # ---------------------------------------------------------------------------

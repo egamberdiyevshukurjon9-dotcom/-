@@ -94,11 +94,45 @@ def uz_model_covers_core_commands():
     return "%d та сўз; грамматика: %s" % (report["grammar_words"], report["grammar"])
 
 
+def new_modules_work():
+    """Телефон пульти (ҳақиқий HTTP), ҳисобот ва push-to-talk Windows API'си."""
+    import json
+    import tempfile
+    import urllib.request
+    sys.path.insert(0, str(APP.parent / "app"))
+    from analytics import SessionLog
+    from hotkeys import PushToTalk, windows_key_state
+    from remote import RemoteServer, SessionState, lan_address
+
+    received = []
+    server = RemoteServer(received.append, SessionState(), "tok", host="127.0.0.1", port=0)
+    port = server.start()
+    try:
+        request = urllib.request.Request("http://127.0.0.1:%d/api/command/next?t=tok" % port, data=b"", method="POST")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert json.load(response)["ok"] and received, "буйруқ навбатга тушмади"
+        try:
+            urllib.request.urlopen("http://127.0.0.1:%d/api/status" % port, timeout=5)
+            raise AssertionError("токенсиз сўров рад этилмади")
+        except urllib.error.HTTPError as error:
+            assert error.code == 401
+    finally:
+        server.stop()
+    windows_key_state(0x78)                      # F9: GetAsyncKeyState чақируви хатосиз
+    PushToTalk("f9").poll_once()                 # ҳақиқий Windows ҳолат функцияси билан
+    with tempfile.TemporaryDirectory() as tmp:
+        log = SessionLog()
+        log.observe_position((1, 3))
+        assert len(log.save(tmp)) == 3
+    return "пульт HTTP, GetAsyncKeyState, ҳисобот сақлаш; LAN манзили %s" % lan_address()
+
+
 check("импортлар", imports)
 check("win32com (COM) ишлайди", com_works)
 check("Vosk кутубхонаси", vosk_loads)
 check("модуллар пакет ичидан юкланган", lib_paths)
 check("ўзбек модели асосий буйруқларни билади", uz_model_covers_core_commands)
+check("пульт, push-to-talk, ҳисобот", new_modules_work)
 check("PortAudio / микрофонлар", portaudio, critical=False)
 check("SendInput (тугма босиш)", sendinput, critical=False)
 check("PowerPoint ўрнатилганми", powerpoint_progid, critical=False)

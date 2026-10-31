@@ -152,6 +152,8 @@ class Command:
     arg: Optional[int] = None  # goto: слайд рақами; jump: ±слайдлар сони; auto_on: сония
     # Овоз қачон айтилгани (time.monotonic). Икки мотордан келган бир хил буйруқни аниқлаш учун.
     at: Optional[float] = field(default=None, compare=False)
+    # Қўлда берилган буйруқ (телефон пульти): такрорланишдан ва микрофон тўхтатилишидан ҳимояланмайди.
+    manual: bool = field(default=False, compare=False)
 
 
 # Ҳар бир буйруқ учун иборалар (лотин, кирил, рус, инглиз — барчаси бирга).
@@ -182,6 +184,14 @@ INTENT_PHRASES: Dict[str, List[str]] = {
     "auto_on": ["avtomatik", "avto", "avtomat", "автомат", "auto", "autoplay"],
     "auto_off": ["qo'lda", "qo'lda boshqar", "avtomatikni o'chir", "avtomatikni to'xtat",
                  "avtomatik to'xta", "вручную", "manual"],
+    # Слайдни эслаб қолиш: Q&A дан кейин керакли жойга қайтиш учун
+    "mark": ["belgila", "belgilash", "belgilab qo'y", "eslab qol", "mark", "bookmark", "закладка"],
+    "to_mark": ["belgiga", "belgiga qayt", "belgiga o'tkaz", "go to mark", "к закладке"],
+    # Сессия ҳисоботи (вақт ва буйруқлар статистикаси)
+    "report": ["hisobot", "statistika", "hisob", "отчёт", "report", "stats"],
+    # Хавфли буйруқни (чиқиш) тасдиқлаш; фақат тасдиқ кутилаётганда ишлайди
+    "confirm_yes": ["ha", "xa", "tasdiqlayman", "yes", "да", "okay"],
+    "confirm_no": ["yo'q", "yoq", "bekor", "bekor qil", "no", "нет", "cancel"],
 }
 
 # "2 slayd oldinga" / "3 slayd orqaga" — нисбий ўтиш
@@ -206,7 +216,7 @@ FILLER_WORDS = [
 ]
 
 # Айрим буйруқлар учун жумладаги сўзлар сони чекланган (тасодифан ишга тушмаслиги учун).
-MAX_WORDS_FOR_INTENT = {"exit": 2}
+MAX_WORDS_FOR_INTENT = {"exit": 2, "confirm_yes": 2, "confirm_no": 2}
 
 
 class CommandParser:

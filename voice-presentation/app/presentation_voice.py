@@ -32,12 +32,17 @@ import threading  # noqa: E402
 import time  # noqa: E402
 from typing import List, Optional, Tuple  # noqa: E402
 
+from analytics import SessionLog  # noqa: E402
 from audio import RATE, AudioInput, Segment, rms  # noqa: E402
 from backends import Backend, DryRunBackend, KeyboardBackend, PowerPointBackend  # noqa: E402
-from commands import Command, CommandParser  # noqa: E402
+from calibrate import (google_recognizer, load_learned, record_samples, run_calibration,  # noqa: E402
+                       samples_from_wav_dir, vosk_recognizer)
+from commands import INTENT_PHRASES, Command, CommandParser  # noqa: E402
 from engines import (GoogleEngine, VoskEngine, ascii_safe_path, discover_models,  # noqa: E402
                      load_engines, read_wav_pcm)
 from errors import AudioError, EngineError, SetupError  # noqa: E402
+from hotkeys import PushToTalk  # noqa: E402
+from remote import RemoteServer, SessionState, new_token  # noqa: E402
 from router import HELP_TEXT, CommandRouter  # noqa: E402
 
 log = logging.getLogger("voicepres")
@@ -72,6 +77,15 @@ DEFAULT_CONFIG = {
     "timer_beep": True,               # вақт огоҳлантиришида сигнал
     "beep": False,                    # ҳар қабул қилинган буйруқда сигнал
     "auto_default_seconds": 15,       # "avtomatik" деганда ҳар неча сонияда ўтсин
+    "confirm_exit": True,             # "chiqish" дегандан кейин тасдиқ сўралади (тасодифий ёпилишдан ҳимоя)
+    "push_to_talk": "",               # масалан "f9" ёки "ctrl": буйруқ фақат тугма босиб турилганда қабул қилинади
+    "report": True,                   # сессия охирида слайд вақтлари ва буйруқлар ҳисоботи
+    "report_dir": "",                 # бўш бўлса: VoiceApp/reports
+    "learned_file": "learned.json",   # --calibrate сақлайдиган шахсий алиаслар
+    "remote": False,                  # true: телефон пульти ва REST API (ишончли Wi-Fi'да)
+    "remote_host": "0.0.0.0",         # "127.0.0.1" — фақат шу компьютер
+    "remote_port": 8765,
+    "remote_token": "",               # бўш бўлса: ҳар сессияда тасодифий
     "preferred_names": ["presentation", "taqdimot", "prezentatsiya"],
     "include_fixed_drives": False,    # флешка "қаттиқ диск" деб кўринса — true қилинг
     "open_delay_seconds": 6,          # заҳира (клавиатура) режимида очилишни кутиш
@@ -140,12 +154,19 @@ def setup_logging(folder: Path, log_file: str) -> None:
             log.warning("Журнал файли очилмади: %s", error)
 
 
+def learned_path(config: dict) -> Path:
+    return home_dir() / config["learned_file"]
+
+
 def make_parser(config: dict) -> CommandParser:
+    extra = {intent: list(words) for intent, words in config["extra_words"].items()}
+    for intent, words in load_learned(learned_path(config), set(INTENT_PHRASES)).items():
+        extra.setdefault(intent, []).extend(words)  # --calibrate сақлаган шахсий алиаслар
     return CommandParser(
         threshold=config["fuzzy_threshold"],
         max_words=config["max_words"],
         wake_word=config["wake_word"],
-        extra_words=config["extra_words"])
+        extra_words=extra)
 
 
 def models_root(config: dict) -> Path:
@@ -287,6 +308,21 @@ def beep(frequency: int = 1000, milliseconds: int = 60) -> None:
 # ---------------------------------------------------------------------------
 # Асосий сессия
 # ---------------------------------------------------------------------------
+def start_remote(args, config: dict, submit, state: SessionState) -> Optional[RemoteServer]:
+    if not (config["remote"] or args.remote):
+        return None
+    server = RemoteServer(submit, state, config["remote_token"] or new_token(),
+                          host=config["remote_host"], port=int(config["remote_port"]))
+    try:
+        server.start()
+    except OSError as error:
+        log.error("Телефон пульти ишга тушмади (порт банд ёки рухсат йўқ): %s", error)
+        return None
+    log.info("Телефон пульти ёқилди. Телефондан очинг (бир хил Wi-Fi'да): %s", server.urls()[0])
+    log.info("Агар Windows ёнғинга қарши девор рухсат сўраса, «Хусусий тармоқлар»га рухсат беринг.")
+    return server
+
+
 def run_session(path: Optional[Path], args, config: dict, parser: CommandParser) -> int:
     results: "queue.Queue" = queue.Queue()
     audio = AudioInput(config["mic"], status=log.warning)
@@ -320,11 +356,28 @@ def run_session(path: Optional[Path], args, config: dict, parser: CommandParser)
         return 2
 
     engines = loaded["engines"]
+    session = SessionLog(title=path.stem if path else "") if config["report"] else None
     for engine in engines:
+        if session is not None:
+            engine.on_heard = session.record_heard
         engine.start(audio.subscribe())
+
+    push_to_talk = None
+    if config["push_to_talk"]:
+        try:
+            push_to_talk = PushToTalk(config["push_to_talk"])
+            push_to_talk.start()
+            log.info("Push-to-talk: буйруқ фақат «%s» тугмаси босиб турилганда қабул қилинади", config["push_to_talk"])
+        except (ValueError, OSError) as error:
+            log.error("Push-to-talk ёқилмади: %s", error)
+    state = SessionState()
+    remote = start_remote(args, config, results.put, state)
+
     router = CommandRouter(
         backend, cooldown=config["cooldown_seconds"], talk_minutes=config["talk_minutes"],
-        warn_minutes=config["warn_minutes"], auto_default_seconds=config["auto_default_seconds"])
+        warn_minutes=config["warn_minutes"], auto_default_seconds=config["auto_default_seconds"],
+        confirm_exit=config["confirm_exit"],
+        gate=push_to_talk.allows if push_to_talk else None, session=session)
     started = time.monotonic()
     log.info("Овозли бошқарув ишга тушди. Мотор: %s. Микрофон: %s",
              " + ".join(e.name for e in engines), device)
@@ -332,6 +385,11 @@ def run_session(path: Optional[Path], args, config: dict, parser: CommandParser)
     if args.test:
         log.info("\n%s", HELP_TEXT)
 
+    def announce(message: str) -> None:
+        log.info("%s", message)
+        state.add_message(message.splitlines()[0])
+
+    last_tick = 0.0
     try:
         while not router.should_exit:
             try:
@@ -344,20 +402,40 @@ def run_session(path: Optional[Path], args, config: dict, parser: CommandParser)
             if command is not None:
                 message = router.handle(command)
                 if message:
-                    log.info("%s", message)
+                    announce(message)
                     if config["beep"]:
                         beep()
-            for message in router.tick():
-                log.info("%s", message)
-                if config["timer_beep"] and router.needs_attention:
-                    beep(800, 250)
+            if time.monotonic() - last_tick >= 0.5:
+                last_tick = time.monotonic()
+                for message in router.tick():
+                    announce(message)
+                    if config["timer_beep"] and router.needs_attention:
+                        beep(800, 250)
+                position = backend.position()
+                if session is not None:
+                    session.observe_position(position)
+                state.update(slide=position[0] if position else None, total=position[1] if position else None,
+                             elapsed=time.monotonic() - started, listening=router.listening,
+                             auto=router.auto_interval, bookmark=router.bookmark)
     finally:
         audio.stop()
         for engine in engines:
             engine.stop()
+        if push_to_talk:
+            push_to_talk.stop()
+        if remote:
+            remote.stop()
         backend.close()
-        minutes, seconds = divmod(int(time.monotonic() - started), 60)
-        log.info("Намойиш давомийлиги: %02d:%02d", minutes, seconds)
+        if session is not None:
+            session.observe_position(None)
+            log.info("%s", session.summary_text())
+            report_dir = Path(config["report_dir"]) if config["report_dir"] else home_dir() / "reports"
+            saved = session.save(report_dir)
+            if saved:
+                log.info("Ҳисобот сақланди: %s", saved[-1])
+        else:
+            minutes, seconds = divmod(int(time.monotonic() - started), 60)
+            log.info("Намойиш давомийлиги: %02d:%02d", minutes, seconds)
     return 0
 
 
@@ -466,6 +544,38 @@ def wav_test(path: str, expect: Optional[str], config: dict, parser: CommandPars
         wanted = [c for c in found if c.intent == intent and (not arg or c.arg == int(arg))]
         print("EXPECT %s: %s" % (expect, "OK" if wanted else "FAIL"))
         return 0 if wanted else 1
+    return 0
+
+
+def run_calibrate(args, config: dict, parser: CommandParser) -> int:
+    """Таниш аниқлигини ўлчаш ва шахсий алиасларни сақлаш (микрофон ёки тайёр .wav файллар)."""
+    engines = load_engines(config, parser, lambda command: None, models_root(config))
+    recognizers = {}
+    for engine in engines:
+        if isinstance(engine, VoskEngine):
+            primary = next(iter(engine.report.values()), {}).get("grammar")
+            recognizers["Vosk офлайн" + (" (грамматика)" if primary else " (эркин)")] = vosk_recognizer(engine)
+        elif isinstance(engine, GoogleEngine):
+            recognizers["Google онлайн"] = google_recognizer(engine, parser)
+    ask = input
+    if args.calibrate_wav:
+        samples = samples_from_wav_dir(Path(args.calibrate_wav))
+        ask = (lambda prompt: "ha") if args.yes else (lambda prompt: "yo'q")  # интерактивсиз
+    else:
+        audio = AudioInput(config["mic"], status=print)
+        blocks = audio.subscribe(maxsize=300)
+        print("Микрофон: %s" % audio.start())
+        try:
+            samples = record_samples(blocks, args.repeats, print, input, min_energy=config["min_energy"])
+        finally:
+            audio.stop()
+    results = run_calibration(samples, recognizers, parser, learned_path(config), ask=ask)
+    if not results:
+        return 1
+    best = max(result.accuracy() for result in results.values())
+    if args.min_accuracy and best < args.min_accuracy:
+        print("Аниқлик %.0f%% — талаб қилинган %.0f%% дан паст" % (100 * best, 100 * args.min_accuracy))
+        return 1
     return 0
 
 
@@ -592,6 +702,15 @@ def main(argv=None) -> int:
     ap.add_argument("--selftest", action="store_true", help="компьютерни текшириш")
     ap.add_argument("--mic-test", action="store_true", help="микрофон баландлигини кўрсатиш")
     ap.add_argument("--list-mics", action="store_true", help="микрофонлар рўйхати")
+    ap.add_argument("--remote", action="store_true", help="телефон пульти ва REST API ни ёқиш")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="таниш аниқлигини ўлчаш ва шахсий алиасларни ўрганиш (микрофон орқали)")
+    ap.add_argument("--calibrate-wav", metavar="ПАПКА",
+                    help="калибровка тайёр овоз файллари билан (next_1.wav, goto5_2.wav ...)")
+    ap.add_argument("--repeats", type=int, default=3, help="--calibrate: ҳар буйруқ неча марта айтилади")
+    ap.add_argument("--yes", action="store_true", help="--calibrate-wav: алиасларни сўрамасдан сақлаш")
+    ap.add_argument("--min-accuracy", type=float, default=0.0,
+                    help="--calibrate: аниқлик шундан паст бўлса хато коди (CI учун), масалан 0.8")
     ap.add_argument("--wav", help="овоз файлини (16 кГц моно) Vosk билан таниш")
     ap.add_argument("--expect", help="--wav билан: кутилган буйруқ (next, goto:5) ёки none")
     ap.add_argument("--lang", help="Google тили (масалан en-US, uz-UZ) — вақтинчалик")
@@ -622,6 +741,8 @@ def main(argv=None) -> int:
             return mic_test(config)
         if args.selftest:
             return selftest(config, parser)
+        if args.calibrate or args.calibrate_wav:
+            return run_calibrate(args, config, parser)
         if args.wav:
             return wav_test(args.wav, args.expect, config, parser)
         if args.word_check:

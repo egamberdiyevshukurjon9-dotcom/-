@@ -1,0 +1,8 @@
+;!@Install@!UTF-8!
+Title="Ovozli prezentatsiya"
+BeginPrompt="Barcha fayllar shu fayl turgan papkaga (fleshkaga) ochiladi. Davom etasizmi?"
+InstallPath="%%S"
+ExtractTitle="Fleshkaga ochilmoqda"
+ExtractDialogText="Iltimos kuting, taxminan 1-2 daqiqa..."
+FinishMessage="Tayyor! Endi START.bat ni ishga tushiring. Prezentatsiyani presentation.pptx nomi bilan shu papkaga qo'ying."
+;!@InstallEnd@!

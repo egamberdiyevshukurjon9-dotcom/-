@@ -19,16 +19,18 @@ HELP_TEXT = """\
   автоматик / "avtomatik 20 soniya" ........ ҳар N сонияда ўзи ўтади
   қўлда / qo'lda ........................... автоматик ўтишни ўчиради
   ҳолат / vaqt ............................. слайд рақами ва вақт
+  белгила / belgila → белгига қайт ......... слайдни эслаб қолиш ва унга қайтиш (Q&A дан кейин)
+  ҳисобот / hisobot ........................ слайд вақтлари ва буйруқлар статистикаси
   изоҳ / izoh .............................. слайд изоҳини чиқаради
   мундарижа / mundarija .................... слайдлар рўйхати
   тинглама / tinglama ...................... микрофонни вақтинча ўчириш
   тингла / tingla .......................... микрофонни қайта ёқиш
   бошла / boshla ........................... намойишни қайта бошлаш
-  чиқиш / chiqish .......................... намойишни ёпиш ва чиқиш"""
+  чиқиш / chiqish → ҳа / ha ................ намойишни ёпиш ва чиқиш (тасдиқ билан)"""
 
 # Намойиш кетиб турмаса маъноси йўқ буйруқлар
 _NEEDS_SHOW = {"next", "prev", "first", "last", "goto", "jump", "black", "white",
-               "unblank", "notes"}
+               "unblank", "notes", "mark", "to_mark"}
 
 
 def format_clock(seconds: float) -> str:
@@ -40,8 +42,16 @@ class CommandRouter:
     def __init__(self, backend, cooldown: float = 1.5,
                  clock: Callable[[], float] = time.monotonic, conflict_window: float = 0.8,
                  talk_minutes: float = 0, warn_minutes: float = 1,
-                 auto_default_seconds: int = 15):
+                 auto_default_seconds: int = 15, confirm_exit: bool = True,
+                 confirm_seconds: float = 6.0, gate: Optional[Callable[[float], bool]] = None,
+                 session=None):
         self.backend = backend
+        self.confirm_exit = confirm_exit
+        self.confirm_seconds = confirm_seconds
+        self.gate = gate                  # push-to-talk: gate(овоз вақти) -> эшитишга рухсатми
+        self.session = session            # analytics.SessionLog ёки None
+        self.bookmark: Optional[int] = None
+        self._exit_deadline = 0.0
         self.cooldown = cooldown
         self.conflict_window = conflict_window
         self._last_command: Optional[Tuple[str, float]] = None
@@ -62,29 +72,36 @@ class CommandRouter:
     def handle(self, command: Command) -> Optional[str]:
         """Буйруқни бажаради ва фойдаланувчига кўрсатиладиган хабарни қайтаради
         (None — буйруқ эътиборсиз қолдирилди)."""
-        if not self.listening and command.intent != "resume_listen":
-            return None
-
-        # Овоз айтилган вақт бўйича такрорни аниқлаймиз: икки мотор (Vosk ва Google)
-        # бир сўзни турли пайтда қайтарса ҳам, у битта буйруқ ҳисобланади.
         moment = command.at if command.at is not None else self.clock()
-        key = (command.intent, command.arg)
-        last = self._last_seen.get(key)
-        if last is not None and abs(moment - last) < self.cooldown:
-            return None
-        # Бир овоздан икки хил буйруқ чиқса (турли моделлар), биринчиси қолади
-        # (фақат овоз вақти маълум буйруқлар учун: мотор уни ҳар доим беради)
-        if (command.at is not None and self._last_command is not None
-                and self._last_command[0] != command.intent
-                and abs(moment - self._last_command[1]) < self.conflict_window):
-            return None
-        self._last_seen[key] = moment
-        self._last_command = (command.intent, moment)
+
+        if not command.manual:  # телефон пульти ва ҳ.к. бу текширувлардан ўтмайди
+            if not self.listening and command.intent != "resume_listen":
+                return None
+            if command.intent in ("confirm_yes", "confirm_no") and not self._exit_pending():
+                return None  # "ha"/"yo'q" оддий нутқда ҳам учрайди: тасдиқ кутилмаса эътибор берилмайди
+            if self.gate is not None and not self.gate(moment):
+                return None  # push-to-talk тугмаси босилмаган
+            # Овоз айтилган вақт бўйича такрорни аниқлаймиз: икки мотор (Vosk ва Google)
+            # бир сўзни турли пайтда қайтарса ҳам, у битта буйруқ ҳисобланади.
+            key = (command.intent, command.arg)
+            last = self._last_seen.get(key)
+            if last is not None and abs(moment - last) < self.cooldown:
+                return None
+            # Бир овоздан икки хил буйруқ чиқса (турли моделлар), биринчиси қолади
+            # (фақат овоз вақти маълум буйруқлар учун: мотор уни ҳар доим беради)
+            if (command.at is not None and self._last_command is not None
+                    and self._last_command[0] != command.intent
+                    and abs(moment - self._last_command[1]) < self.conflict_window):
+                return None
+            self._last_seen[key] = moment
+            self._last_command = (command.intent, moment)
 
         if command.intent in _NEEDS_SHOW and not self.backend.is_running():
             return "Намойиш кетмаяпти — «boshla» (бошла) денг"
 
         message = getattr(self, "_do_" + command.intent)(command)
+        if self.session is not None:
+            self.session.record_command(command.intent, command.arg, command.manual)
         return self._with_position(message)
 
     def tick(self) -> List[str]:
@@ -179,9 +196,44 @@ class CommandRouter:
         self.backend.start()
         return "Намойиш бошланди"
 
-    def _do_exit(self, _):
+    def _exit_pending(self) -> bool:
+        return self.clock() < self._exit_deadline
+
+    def _do_exit(self, command):
+        if command.manual or not self.confirm_exit or self._exit_pending():
+            self.should_exit = True
+            return "Намойиш ёпилмоқда"
+        # Чиқиш — энг "қиммат" хато: сўзни янглиш эшитиш намойишни ёпиб юбормаслиги учун тасдиқ сўралади
+        self._exit_deadline = self.clock() + self.confirm_seconds
+        return ("Чиқишни тасдиқланг: «ha» (ҳа) ёки яна «chiqish» денг (%d сония). "
+                "Бекор қилиш: «yo'q»" % self.confirm_seconds)
+
+    def _do_confirm_yes(self, _):
         self.should_exit = True
         return "Намойиш ёпилмоқда"
+
+    def _do_confirm_no(self, _):
+        self._exit_deadline = 0.0
+        return "Чиқиш бекор қилинди"
+
+    def _do_mark(self, _):
+        position = self.backend.position()
+        if not position:
+            return "Белгилаб бўлмади: слайд рақами номаълум (клавиатура режими)"
+        self.bookmark = position[0]
+        return "%d-слайд белгиланди. Қайтиш учун «belgiga qayt» денг" % self.bookmark
+
+    def _do_to_mark(self, _):
+        if self.bookmark is None:
+            return "Белги қўйилмаган — аввал «belgila» денг"
+        if not self.backend.goto(self.bookmark):
+            return "%d-слайд топилмади" % self.bookmark
+        return "Белгига қайтилди: %d-слайд" % self.bookmark
+
+    def _do_report(self, _):
+        if self.session is None:
+            return "Ҳисобот ўчирилган"
+        return self.session.summary_text()
 
     def _do_help(self, _):
         return HELP_TEXT

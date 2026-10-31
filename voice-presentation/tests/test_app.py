@@ -68,6 +68,8 @@ class ConfigTests(unittest.TestCase):
         data = json.loads(shipped.read_text(encoding="utf-8"))
         unknown = [k for k in data if not k.startswith("_") and k not in pv.DEFAULT_CONFIG]
         self.assertEqual(unknown, [])
+        for key in ("confirm_exit", "push_to_talk", "report", "remote"):
+            self.assertIn(key, data)       # янги созламалар флешка config.json да ҳам кўринсин
         pv.make_parser(dict(pv.DEFAULT_CONFIG, **{k: v for k, v in data.items() if not k.startswith("_")}))
 
     def test_root_dir_from_environment(self):
@@ -165,7 +167,8 @@ class SessionTests(unittest.TestCase):
         with mock.patch.object(pv, "AudioInput", FakeAudio), \
                 mock.patch.object(pv, "load_engines", load_engines), \
                 mock.patch.object(pv, "open_backend", fake_open):
-            return pv.run_session(None, SimpleNamespace(test=False), dict(pv.DEFAULT_CONFIG),
+            return pv.run_session(None, SimpleNamespace(test=False, remote=False),
+                                  dict(pv.DEFAULT_CONFIG, confirm_exit=False, report=False),
                                   CommandParser())
 
     def test_commands_then_exit(self):
@@ -210,3 +213,62 @@ class MainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionExtrasTests(unittest.TestCase):
+    """Ҳисобот, телефон пульти ва чиқиш тасдиғи сессия циклида."""
+
+    def run_with(self, commands, **config):
+        backend = DryRunBackend(total=10)
+        backend.close = lambda: None
+        captured = {}
+
+        class FakeEngine:
+            name = "Fake"
+
+            def __init__(self, results):
+                self.results = results
+                self.on_heard = None
+
+            def start(self, audio_queue):
+                for command in commands:
+                    self.results.put(command)
+
+            def stop(self):
+                pass
+
+        def load_engines(cfg, parser, emit, root):
+            engine = FakeEngine(emit.__self__)
+            captured["engine"] = engine
+            return [engine]
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(pv, "AudioInput", FakeAudio), \
+                mock.patch.object(pv, "load_engines", load_engines), \
+                mock.patch.object(pv, "open_backend", lambda *a: backend):
+            cfg = dict(pv.DEFAULT_CONFIG, report_dir=tmp, **config)
+            code = pv.run_session(None, SimpleNamespace(test=False, remote=False), cfg, CommandParser())
+            files = sorted(p.suffix for p in Path(tmp).iterdir())
+        return code, backend, captured["engine"], files
+
+    def test_exit_needs_confirmation_and_report_is_saved(self):
+        FakeAudio.fail, FakeAudio.stopped = None, False
+        code, backend, engine, files = self.run_with(
+            [Command("next"), Command("exit"), Command("confirm_yes", None, None)])
+        # Командалар бир заҳилда келгани учун confirm_yes "exit" билан бир лаҳзада; cooldown кесмайди
+        self.assertEqual(code, 0)
+        self.assertEqual(backend.current, 2)
+        self.assertEqual(files, [".csv", ".html", ".json"])
+        self.assertTrue(callable(engine.on_heard))   # мотор ҳисоботга улангани
+
+    def test_report_can_be_disabled(self):
+        FakeAudio.fail, FakeAudio.stopped = None, False
+        code, _, _, files = self.run_with([Command("exit", manual=True)], report=False)
+        self.assertEqual((code, files), (0, []))
+
+    def test_remote_commands_reach_the_router(self):
+        FakeAudio.fail, FakeAudio.stopped = None, False
+        code, backend, _, _ = self.run_with(
+            [Command("next", manual=True), Command("next", manual=True), Command("exit", manual=True)],
+            remote=True, remote_host="127.0.0.1", remote_port=0, remote_token="tok")
+        self.assertEqual((code, backend.current), (0, 3))
