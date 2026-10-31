@@ -32,11 +32,11 @@ import threading  # noqa: E402
 import time  # noqa: E402
 from typing import List, Optional, Tuple  # noqa: E402
 
-from audio import AudioInput, rms  # noqa: E402
+from audio import RATE, AudioInput, Segment, rms  # noqa: E402
 from backends import Backend, DryRunBackend, KeyboardBackend, PowerPointBackend  # noqa: E402
 from commands import Command, CommandParser  # noqa: E402
-from engines import (VoskEngine, ascii_safe_path, discover_models, load_engines,  # noqa: E402
-                     read_wav_pcm)
+from engines import (GoogleEngine, VoskEngine, ascii_safe_path, discover_models,  # noqa: E402
+                     load_engines, read_wav_pcm)
 from errors import AudioError, EngineError, SetupError  # noqa: E402
 from router import HELP_TEXT, CommandRouter  # noqa: E402
 
@@ -50,7 +50,7 @@ DEFAULT_CONFIG = {
     # --- таниш мотори ---
     "engine": "auto",                 # auto: Vosk (офлайн) бор бўлса шу, йўқса Google | vosk | google | both
     "vosk_models": ["uz", "ru", "en"],  # models/ папкасидаги қайси тиллар ишлатилсин
-    "vosk_grammar": True,             # фақат буйруқ сўзларини қидириш (тезроқ ва аниқроқ)
+    "vosk_grammar": "primary",        # "primary": грамматика фақат биринчи тил учун | true: ҳаммаси | false: ҳеч қайси
     "vosk_alternatives": 3,
     "models_dir": "",                 # бўш бўлса: VoiceApp/models
     "languages": ["uz-UZ"],           # Google тиллари (["uz-UZ", "ru-RU"] — сўровлар кўпаяди)
@@ -437,17 +437,27 @@ def mic_test(config: dict, seconds: float = 8.0) -> int:
 
 
 def wav_test(path: str, expect: Optional[str], config: dict, parser: CommandParser) -> int:
-    models = discover_models(models_root(config), config["vosk_models"] or None)
-    if not models:
-        raise EngineError("Vosk моделлари топилмади: %s" % models_root(config))
-    engine = VoskEngine(config, parser, lambda command: None, models)
-    engine.load()
+    pcm = read_wav_pcm(path)
     found: List[Command] = []
-    for language, texts, command in engine.process_pcm(read_wav_pcm(path)):
-        print("HEARD [%s]: %s -> %s" % (language, " | ".join(texts),
-                                        "%s %s" % (command.intent, command.arg or "") if command else "-"))
-        if command:
-            found.append(command)
+    if config["engine"] == "google":  # Google йўлини (SpeechRecognition + flac + тармоқ) синаш
+        engine = GoogleEngine(config, parser, found.append)
+        engine.load()
+        engine.recognize(Segment(pcm, len(pcm) / (RATE * 2.0), False, 0.0))
+        for command in found:
+            print("HEARD [google]: -> %s %s" % (command.intent, command.arg or ""))
+        if not found:
+            print("HEARD [google]: -")
+    else:
+        models = discover_models(models_root(config), config["vosk_models"] or None)
+        if not models:
+            raise EngineError("Vosk моделлари топилмади: %s" % models_root(config))
+        engine = VoskEngine(config, parser, lambda command: None, models)
+        engine.load()
+        for language, texts, command in engine.process_pcm(pcm):
+            print("HEARD [%s]: %s -> %s" % (language, " | ".join(texts),
+                                            "%s %s" % (command.intent, command.arg or "") if command else "-"))
+            if command:
+                found.append(command)
     if expect:
         if expect == "none":  # оддий гап: ҳеч қандай буйруқ топилмаслиги керак
             print("EXPECT none: %s" % ("OK" if not found else "FAIL"))
@@ -546,7 +556,8 @@ def selftest(config: dict, parser: CommandParser) -> int:
             add("X", "Vosk моделлари юкланмади: %s" % error)
         if engine:
             for language, info in engine.report.items():
-                add("OK", "Модель «%s» юкланди: грамматикада %d та сўз" % (language, info["grammar_words"]))
+                add("OK", "Модель «%s» юкланди (%s): моделда %d та буйруқ сўзи бор" % (
+                    language, "грамматика билан" if info["grammar"] else "эркин таниш", info["grammar_words"]))
                 coverage = info.get("coverage", {})
                 if config["verbose"]:
                     print("      моделда йўқ сўзлар: %s" % ", ".join(info["missing"]))
@@ -583,6 +594,7 @@ def main(argv=None) -> int:
     ap.add_argument("--list-mics", action="store_true", help="микрофонлар рўйхати")
     ap.add_argument("--wav", help="овоз файлини (16 кГц моно) Vosk билан таниш")
     ap.add_argument("--expect", help="--wav билан: кутилган буйруқ (next, goto:5) ёки none")
+    ap.add_argument("--lang", help="Google тили (масалан en-US, uz-UZ) — вақтинчалик")
     ap.add_argument("--free", action="store_true",
                     help="Vosk грамматикасиз (эркин таниш) — таққослаш учун")
     ap.add_argument("--word-check", help="сўзлар моделда борми: a,b,c ёки @файл.txt")
@@ -595,6 +607,8 @@ def main(argv=None) -> int:
         config["engine"] = args.engine
     if args.free:
         config["vosk_grammar"] = False
+    if args.lang:
+        config["languages"] = [args.lang]
     if args.test or args.verbose:
         config["verbose"] = True
     setup_logging(folder, config["log_file"])

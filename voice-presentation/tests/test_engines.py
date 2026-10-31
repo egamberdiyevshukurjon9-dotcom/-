@@ -162,6 +162,18 @@ class VoskEngineTests(unittest.TestCase):
         self.engine(vosk_grammar=False).load()
         self.assertIsNone(FakeRecognizer.instances[0].grammar)
 
+    def test_grammar_only_for_the_primary_language_by_default(self):
+        root = Path(self.tmp.name)
+        models = {"uz": self.models["uz"], "ru": make_model(root, "ru", ["назад"])}
+        for mode, expected in (("primary", [True, False]), (True, [True, True]),
+                               ("all", [True, True]), (False, [False, False])):
+            FakeRecognizer.instances.clear()
+            engine = VoskEngine(dict(CONFIG, vosk_grammar=mode), CommandParser(), self.emitted.append,
+                                models, vosk_module=FAKE_VOSK)
+            engine.load()
+            self.assertEqual([r.grammar is not None for r in FakeRecognizer.instances], expected, mode)
+            self.assertEqual([engine.report[k]["grammar"] for k in ("uz", "ru")], expected, mode)
+
     def test_feed_emits_command_with_timestamp(self):
         engine = self.engine()
         engine.load()

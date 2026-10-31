@@ -73,10 +73,32 @@ def lib_paths():
     return "\n         ".join(str(m.__file__) for m in (vosk, sounddevice, pythoncom))
 
 
+def uz_model_covers_core_commands():
+    """Ўзбек Vosk моделида асосий буйруқлар учун камида битта сўз бўлиши шарт."""
+    import os
+    package = Path(os.environ["PKG"]) / "VoiceApp"
+    sys.path.insert(0, str(package / "app"))
+    import presentation_voice as pv
+    from commands import CommandParser
+    from engines import VoskEngine, discover_models
+    models = discover_models(package / "models", ["uz"])
+    assert models, "models/uz топилмади"
+    engine = VoskEngine(dict(pv.DEFAULT_CONFIG), CommandParser(), lambda command: None, models)
+    engine.load()
+    report = engine.report["uz"]
+    core = ("next", "prev", "first", "last", "black", "white", "exit", "start", "help")
+    empty = [intent for intent in core if not report["coverage"][intent]]
+    assert not empty, "ўзбек моделида сўзи йўқ буйруқлар: %s" % empty
+    for word in ("slayd", "besh", "bir"):
+        assert word not in report["missing"], "ўзбек моделида «%s» сўзи йўқ" % word
+    return "%d та сўз; грамматика: %s" % (report["grammar_words"], report["grammar"])
+
+
 check("импортлар", imports)
 check("win32com (COM) ишлайди", com_works)
 check("Vosk кутубхонаси", vosk_loads)
 check("модуллар пакет ичидан юкланган", lib_paths)
+check("ўзбек модели асосий буйруқларни билади", uz_model_covers_core_commands)
 check("PortAudio / микрофонлар", portaudio, critical=False)
 check("SendInput (тугма босиш)", sendinput, critical=False)
 check("PowerPoint ўрнатилганми", powerpoint_progid, critical=False)

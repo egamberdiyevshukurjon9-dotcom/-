@@ -67,7 +67,7 @@ class ParserTests(unittest.TestCase):
             "boshidan": "first", "бошидан": "first", "qaytadan": "first",
             "oxirgi slayd": "last", "охирги": "last",
             "qora ekran": "black", "қора экран": "black", "oq ekran": "white",
-            "ekranni och": "unblank", "ko'rsat": "unblank",
+            "ekranni och": "unblank", "ko'rsat": "unblank", "показать": "unblank",
             "tinglama": "pause_listen", "tingla": "resume_listen",
             "boshla": "start", "chiqish": "exit", "чиқиш": "exit", "tugat": "exit",
             "yordam": "help", "holat": "status", "vaqt": "status", "izoh": "notes",

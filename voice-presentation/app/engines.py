@@ -162,7 +162,12 @@ class VoskEngine:
             vosk.SetLogLevel(-1)
         except Exception:
             pass
-        for language, path in self.models.items():
+        mode = self.config.get("vosk_grammar", "primary")
+        for index, (language, path) in enumerate(self.models.items()):
+            # Грамматика фақат асосий (биринчи) тил учун: бошқа тилдаги модель грамматика билан
+            # оддий нутқни тасодифан буйруқ сўзига "мажбурлаб" келтиради (CI да рус модели
+            # инглизча гапни "слушай" деб эшитган). Қолган тиллар эркин таниш режимида.
+            use_grammar = mode in (True, "all") or (mode == "primary" and index == 0)
             try:
                 model = vosk.Model(ascii_safe_path(path))
             except Exception as error:
@@ -170,10 +175,10 @@ class VoskEngine:
             grammar = None
             known = find_known_words(model, self.parser.candidate_words())
             available = {norm(w) for w in known}
-            info = {"path": str(path), "grammar_words": len(known),
+            info = {"path": str(path), "grammar_words": len(known), "grammar": use_grammar,
                     "missing": sorted(self.parser.vocabulary() - available),
                     "coverage": self.parser.coverage(available)}
-            if self.config.get("vosk_grammar", True):
+            if use_grammar:
                 if known:
                     grammar = json.dumps(known + ["[unk]"], ensure_ascii=False)
                 else:

@@ -3,7 +3,7 @@
 
   "engine": "auto",
   "vosk_models": ["uz", "ru", "en"],
-  "vosk_grammar": true,
+  "vosk_grammar": "primary",
   "languages": ["uz-UZ"],
 
   "mic": null,

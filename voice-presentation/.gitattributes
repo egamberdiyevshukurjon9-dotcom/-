@@ -1,0 +1,3 @@
+# Windows cmd LF-only .bat файлларда "goto :label" ни нотўғри ишлатиши мумкин
+flash/*.bat text eol=crlf
+flash/*.txt text eol=crlf

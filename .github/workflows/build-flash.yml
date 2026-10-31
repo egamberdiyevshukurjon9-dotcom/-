@@ -99,6 +99,13 @@ jobs:
           $synth.Dispose()
           if ($failed -gt 0) { Write-Host "::error::$failed ta nutq sinovi (grammar rejimi) muvaffaqiyatsiz"; exit 1 }
 
+      - name: Google path (SpeechRecognition + flac + network) with real English speech
+        continue-on-error: true
+        shell: cmd
+        run: |
+          %PY% -X utf8 -B %PKG%\VoiceApp\app\presentation_voice.py --wav %RUNNER_TEMP%\next.wav --expect next --engine google --lang en-US
+          %PY% -X utf8 -B %PKG%\VoiceApp\app\presentation_voice.py --wav %RUNNER_TEMP%\goto.wav --expect goto:5 --engine google --lang en-US
+
       - name: START.bat chain (batch file -> embedded Python -> arguments)
         shell: cmd
         run: |
