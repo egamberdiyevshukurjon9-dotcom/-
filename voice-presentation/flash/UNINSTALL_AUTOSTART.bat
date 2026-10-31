@@ -6,7 +6,7 @@ set "LAUNCHER=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\VoicePrese
 if exist "%LAUNCHER%" del "%LAUNCHER%"
 if exist "%TARGET%" rmdir /s /q "%TARGET%"
 if exist "%TARGET%" (
-    echo Ba'zi fayllar band (dastur hozir ishlayapti). Kompyuterni qayta yoqing va yana ishga tushiring.
+    echo Ba'zi fayllar band - dastur hozir ishlayapti. Kompyuterni qayta yoqing va yana ishga tushiring.
     set "RC=1"
 ) else (
     echo Avtomatik yoqish o'chirildi.

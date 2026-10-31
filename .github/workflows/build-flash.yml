@@ -39,7 +39,7 @@ jobs:
           python-version: "3.12"
 
       - name: Build the flash package (Python + libraries + Vosk models)
-        run: python voice-presentation/tools/build_flash.py
+        run: python voice-presentation/tools/build_flash.py --no-zip
 
       - name: Bundle contents
         shell: pwsh
@@ -147,13 +147,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "UNINSTALL_AUTOSTART.bat exit code $LASTEXITCODE" }
           if ((Test-Path $target) -or (Test-Path $launcher)) { throw "uninstall left files behind" }
 
-      - name: Upload the flash package
+      - name: Upload the flash package (the downloaded zip is extracted straight onto the flash drive)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: VoicePresentation-Flash
-          path: voice-presentation/dist/VoicePresentation-Flash.zip
-          compression-level: 0
+          path: voice-presentation/dist/VoicePresentation-Flash
           retention-days: 30
           if-no-files-found: warn
 
@@ -167,10 +166,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: VoicePresentation-Flash
+          path: VoicePresentation-Flash
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          zip -r -q VoicePresentation-Flash.zip VoicePresentation-Flash
           gh release create "flash-${{ github.run_number }}" VoicePresentation-Flash.zip \
             --repo "${{ github.repository }}" \
             --title "Флешка пакети #${{ github.run_number }}" \
