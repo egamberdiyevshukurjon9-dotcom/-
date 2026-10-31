@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+voice_log.txt
+build/
+dist/
+*.spec
+VoicePresentation.exe
+*.pptx
+*.ppt
+*.ppsx
+*.pps
+*.odp

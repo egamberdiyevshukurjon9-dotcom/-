@@ -1,0 +1,15 @@
+{
+  "languages": ["uz-UZ"],
+  "mic_index": null,
+  "max_words": 4,
+  "max_command_seconds": 3.0,
+  "cooldown_seconds": 1.0,
+  "fuzzy_threshold": 0.85,
+  "wake_word": "",
+  "beep": false,
+  "verbose": false,
+  "log_file": "",
+  "extra_words": {},
+  "preferred_names": ["presentation", "taqdimot", "prezentatsiya"],
+  "include_fixed_drives": false
+}
