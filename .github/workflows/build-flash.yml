@@ -234,10 +234,30 @@ jobs:
           zip -r -q VoicePresentation-Flash.zip VoicePresentation-Flash
           files="VoicePresentation-Flash.zip"
           if [ -f setup/VoicePresentation-Setup.exe ]; then files="setup/VoicePresentation-Setup.exe $files"; fi
+          # Олдинги қoralama (draft) релизлар эгасидан бошқага кўринмайди ва ҳаволаси очилмайди — тозалаймиз
+          for id in $(gh api "repos/${{ github.repository }}/releases" --jq '.[] | select(.draft and (.name | startswith("Flash package"))) | .id'); do
+            gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
+          done
+          {
+            echo "## Бошлаш"
+            echo
+            echo "1. **VoicePresentation-Setup.exe** ни юкланг (битта файл) ва флешкага нусхаланг."
+            echo "2. Флешкада икки марта босинг ва тасдиқланг: ҳамма нарса флешкага очилади (1-2 дақиқа)."
+            echo "3. Презентацияни \`presentation.pptx\` номи билан флешкага қўйинг ва **START.bat** ни босинг."
+            echo
+            echo "Windows «компьютерингизни ҳимоя қилди» деса: **Қўшимча маълумот → Барибир ишга тушириш** (файл имзоланмаган)."
+            echo ".exe очилмаса: **VoicePresentation-Flash.zip** ни юклаб, ичидаги ҳамма нарсани флешкага очинг."
+            echo "Муаммо бўлса флешкадаги **TEST.bat** нима етишмаслигини ёзиб беради."
+            echo
+            echo "SHA256:"
+            echo '```'
+            sha256sum $files | sed 's# setup/# #'
+            echo '```'
+          } > notes.md
           draft="--draft"
           if [ "${{ inputs.publish }}" = "true" ]; then draft=""; fi
           gh release create "flash-${{ github.run_number }}" $files $draft \
             --target "${{ github.sha }}" \
             --repo "${{ github.repository }}" \
             --title "Flash package #${{ github.run_number }}" \
-            --notes "VoicePresentation-Setup.exe (bitta fayl): fleshkaga nusxalang va ikki marta bosing. Zip: ochib, ichidagi hamma narsani fleshkaga nusxalang. START.bat - ishga tushirish."
+            --notes-file notes.md
