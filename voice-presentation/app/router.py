@@ -38,11 +38,13 @@ def format_clock(seconds: float) -> str:
 
 class CommandRouter:
     def __init__(self, backend, cooldown: float = 1.5,
-                 clock: Callable[[], float] = time.monotonic,
+                 clock: Callable[[], float] = time.monotonic, conflict_window: float = 0.8,
                  talk_minutes: float = 0, warn_minutes: float = 1,
                  auto_default_seconds: int = 15):
         self.backend = backend
         self.cooldown = cooldown
+        self.conflict_window = conflict_window
+        self._last_command: Optional[Tuple[str, float]] = None
         self.clock = clock
         self.listening = True
         self.should_exit = False
@@ -70,7 +72,14 @@ class CommandRouter:
         last = self._last_seen.get(key)
         if last is not None and abs(moment - last) < self.cooldown:
             return None
+        # Бир овоздан икки хил буйруқ чиқса (турли моделлар), биринчиси қолади
+        # (фақат овоз вақти маълум буйруқлар учун: мотор уни ҳар доим беради)
+        if (command.at is not None and self._last_command is not None
+                and self._last_command[0] != command.intent
+                and abs(moment - self._last_command[1]) < self.conflict_window):
+            return None
         self._last_seen[key] = moment
+        self._last_command = (command.intent, moment)
 
         if command.intent in _NEEDS_SHOW and not self.backend.is_running():
             return "Намойиш кетмаяпти — «boshla» (бошла) денг"

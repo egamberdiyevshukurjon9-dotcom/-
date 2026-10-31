@@ -199,8 +199,8 @@ class MainTests(unittest.TestCase):
     def test_missing_file(self):
         self.assertEqual(pv.main(["--file", "/yo'q/fayl.pptx"]), 1)
 
-    def test_vocab_grep_without_models(self):
-        self.assertEqual(pv.main(["--vocab-grep", "keyin"]), 0)
+    def test_word_check_without_models_is_a_clear_error(self):
+        self.assertEqual(pv.main(["--word-check", "keyingi,oldingi"]), 1)
 
     def test_selftest_runs_and_reports(self):
         # Linux'да sounddevice йўқ — [X] чиқиши керак, лекин дастур ўзи қулаб тушмаслиги шарт

@@ -10,10 +10,13 @@
 буйруқни `emit(Command)` орқали беради. Буйруқ овоз айтилган вақт белгиси билан
 келади — шу туфайли икки мотор бирга ишлаганда ҳам бир сўз икки марта бажарилмайди.
 """
+import hashlib
 import importlib.util
 import json
 import logging
+import os
 import queue
+import re
 import sys
 import threading
 import wave
@@ -61,49 +64,57 @@ def discover_models(root: Path, wanted: Optional[List[str]] = None) -> Dict[str,
         if wanted and language not in wanted:
             continue
         found.setdefault(language, model)
+    if wanted:  # устувор тартиб: config.json даги рўйхат бўйича (биринчиси - асосий тил)
+        found = {lang: found[lang] for lang in wanted if lang in found}
     return found
 
 
-def read_vocabulary(model_dir: Path) -> Optional[Dict[str, List[str]]]:
-    """Модель луғати: {меъёрлаштирилган сўз: [моделдаги ёзилиши, ...]}."""
-    for relative in ("graph/words.txt", "words.txt"):
-        path = model_dir / relative
-        if not path.exists():
-            continue
-        mapping: Dict[str, List[str]] = {}
-        with open(path, encoding="utf-8", errors="ignore") as handle:
-            for line in handle:
-                word = line.split(" ", 1)[0].strip()
-                if not word or len(word) > 24 or word[0] in "<#[":
-                    continue
-                key = norm(word)
-                if key and " " not in key:
-                    mapping.setdefault(key, []).append(word)
-        return mapping
-    return None
+def find_known_words(model, candidates) -> List[str]:
+    """Моделнинг ўз луғатида борлиги текширилган сўзлар (луғат файли керак эмас)."""
+    return sorted(w for w in candidates if model.vosk_model_find_word(w) > 0)
 
 
-def build_grammar(parser: CommandParser, vocabulary: Dict[str, List[str]]
-                  ) -> Tuple[List[str], List[str]]:
-    """Грамматика сўзлари (моделда борлари) ва моделда топилмаган сўзлар."""
-    needed = parser.vocabulary()
-    words = sorted({raw for token in needed for raw in vocabulary.get(token, [])})
-    missing = sorted(t for t in needed if t not in vocabulary)
-    return words, missing
-
-
-def ascii_safe_path(path: Path) -> str:
-    """Vosk (C++) кирилл ёзувли йўлни очолмайди — Windows'да қисқа (8.3) ном олинади."""
-    text = str(path)
-    if text.isascii() or sys.platform != "win32":
-        return text
+def _short_path(text: str) -> Optional[str]:
     try:
         import ctypes
         buffer = ctypes.create_unicode_buffer(32768)
-        if ctypes.windll.kernel32.GetShortPathNameW(text, buffer, len(buffer)) and buffer.value.isascii():
+        if ctypes.windll.kernel32.GetShortPathNameW(text, buffer, len(buffer)):
             return buffer.value
     except Exception:
         pass
+    return None
+
+
+def _junction(path: Path) -> Optional[str]:
+    """ProgramData\\VoicePresentation\\links да лотин ёзувли ҳавола (администратор керак эмас)."""
+    try:
+        import _winapi
+        base = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "VoicePresentation" / "links"
+        base.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha1(str(path).lower().encode("utf-8")).hexdigest()[:12]
+        link = base / ("%s-%s" % (key, re.sub(r"[^A-Za-z0-9._-]", "_", path.name)))
+        if os.path.lexists(link) and not link.exists():
+            os.rmdir(link)  # нишони йўқолган эски ҳавола
+        if not os.path.lexists(link):
+            _winapi.CreateJunction(str(path), str(link))
+        return str(link)
+    except Exception as error:
+        log.debug("junction ясалмади: %s", error)
+        return None
+
+
+def ascii_safe_path(path: Path) -> str:
+    """Vosk (C++) кирил ёзувли йўлни очолмайди. Windows'да аввал қисқа (8.3) ном, у бўлмаса
+    ProgramData'даги лотин ёзувли ҳавола (junction) ишлатилади."""
+    text = str(path)
+    if text.isascii() or sys.platform != "win32":
+        return text
+    short = _short_path(text)
+    if short and short.isascii():
+        return short
+    link = _junction(path)
+    if link and link.isascii():
+        return link
     log.warning("Модель йўлида лотин бўлмаган ҳарфлар бор: %s. Агар модель "
                 "юкланмаса, лотин ҳарфли папкага кўчиринг.", text)
     return text
@@ -157,15 +168,16 @@ class VoskEngine:
             except Exception as error:
                 raise EngineError("Vosk модели юкланмади (%s): %s" % (path, error))
             grammar = None
-            info = {"path": str(path), "grammar_words": 0, "missing": []}
+            known = find_known_words(model, self.parser.candidate_words())
+            available = {norm(w) for w in known}
+            info = {"path": str(path), "grammar_words": len(known),
+                    "missing": sorted(self.parser.vocabulary() - available),
+                    "coverage": self.parser.coverage(available)}
             if self.config.get("vosk_grammar", True):
-                vocabulary = read_vocabulary(path)
-                if vocabulary:
-                    words, info["missing"] = build_grammar(self.parser, vocabulary)
-                    info["grammar_words"] = len(words)
-                    info["coverage"] = self.parser.coverage(set(vocabulary))
-                    if words:
-                        grammar = json.dumps(words + ["[unk]"], ensure_ascii=False)
+                if known:
+                    grammar = json.dumps(known + ["[unk]"], ensure_ascii=False)
+                else:
+                    log.warning("«%s» моделида буйруқ сўзлари топилмади — грамматикасиз ишлайди", language)
             recognizer = (vosk.KaldiRecognizer(model, RATE, grammar) if grammar
                           else vosk.KaldiRecognizer(model, RATE))
             try:
@@ -193,45 +205,42 @@ class VoskEngine:
             except Exception as error:
                 log.error("Vosk хатоси: %s", error)
 
-    def feed(self, block: bytes, stamp: float) -> None:
+    def _decode(self, block: bytes) -> List[Tuple[str, List[str], Optional[Command]]]:
+        """Бўлакни ҳамма моделларга беради; жумла тугаган моделлардан натижа олади."""
+        outcomes = []
         for language, recognizer in self.recognizers.items():
             if recognizer.AcceptWaveform(block):
-                self._deliver(language, texts_from_result(recognizer.Result()), stamp)
+                texts = texts_from_result(recognizer.Result())
+                if texts:
+                    outcomes.append((language, texts, self.parser.parse(texts)))
+        return outcomes
 
-    def _deliver(self, language: str, texts: List[str], stamp: float) -> None:
-        if not texts:
-            return
-        command = self.parser.parse(texts)
-        if command:
-            log.info("Эшитилди [%s]: «%s»", language, texts[0])
-            self.emit(replace(command, at=stamp))
-        elif self.config.get("verbose"):
-            log.info("Эшитилди [%s] (буйруқ эмас): «%s»", language, texts[0])
+    def feed(self, block: bytes, stamp: float) -> None:
+        # Битта овозга бир нечта модель турлича буйруқ қайтариши мумкин (масалан, рус модели
+        # ўзбекча сўзни "назад" деб эшитса). Фақат энг устувор модельники (config тартиби) олинади.
+        chosen = None
+        for language, texts, command in self._decode(block):
+            if command and chosen is None:
+                chosen = command
+                log.info("Эшитилди [%s]: «%s»", language, texts[0])
+            elif self.config.get("verbose"):
+                log.info("Эшитилди [%s] (%s): «%s»", language,
+                         "иккинчи даражали" if command else "буйруқ эмас", texts[0])
+        if chosen is not None:
+            self.emit(replace(chosen, at=stamp))
 
     # -- файл орқали синаш ---------------------------------------------------------
     def process_pcm(self, pcm: bytes) -> List[Tuple[str, List[str], Optional[Command]]]:
         """Тайёр овозни (16 кГц моно PCM) тўлиқ ишлаб чиқади. Синов учун."""
         results: List[Tuple[str, List[str], Optional[Command]]] = []
-        original = self.emit
-        self.emit = lambda command: None
-        original_deliver = self._deliver
-
-        def collect(language, texts, stamp):
-            results.append((language, texts, self.parser.parse(texts) if texts else None))
-
-        self._deliver = collect  # type: ignore[assignment]
-        try:
-            pcm = pcm + b"\x00" * (RATE * 2)  # охирида 1 сония жимлик: жумла тугаши учун
-            step = BLOCK_FRAMES * 2
-            for offset in range(0, len(pcm), step):
-                self.feed(pcm[offset:offset + step], 0.0)
-            for language, recognizer in self.recognizers.items():
-                texts = texts_from_result(recognizer.FinalResult())
-                if texts:
-                    collect(language, texts, 0.0)
-        finally:
-            self.emit = original
-            self._deliver = original_deliver  # type: ignore[assignment]
+        pcm = pcm + b"\x00" * (RATE * 2)  # охирида 1 сония жимлик: жумла тугаши учун
+        step = BLOCK_FRAMES * 2
+        for offset in range(0, len(pcm), step):
+            results.extend(self._decode(pcm[offset:offset + step]))
+        for language, recognizer in self.recognizers.items():
+            texts = texts_from_result(recognizer.FinalResult())
+            if texts:
+                results.append((language, texts, self.parser.parse(texts)))
         return results
 
 

@@ -55,13 +55,13 @@ jobs:
         run: '%PY% -X utf8 -B voice-presentation\tools\ci_smoke.py'
         shell: cmd
 
-      - name: Vosk models - vocabulary and command coverage
+      - name: Vosk models - which command words each model knows
         continue-on-error: true
         shell: cmd
         run: |
           %PY% -X utf8 -B %PKG%\VoiceApp\app\presentation_voice.py --selftest --verbose
-          echo ===== uz vocabulary lookup =====
-          %PY% -X utf8 -B %PKG%\VoiceApp\app\presentation_voice.py --vocab-grep keyin,keying,oldin,oldingi,orqa,ortga,bosh,oxir,tugat,chiq,slayd,slayt,ekran,qora,oq,davom,avto,holat,vaqt,izoh,mundar,jim,tingla,korsat,otkaz,otish,qayt,yop,yordam,buyruq,soniya,iltimos,besh,bir,ikki
+          echo ===== candidate words per model =====
+          %PY% -X utf8 -B %PKG%\VoiceApp\app\presentation_voice.py --word-check @voice-presentation\tools\ci_candidates.txt
 
       - name: Offline recognition with real English speech (Windows TTS -> Vosk)
         shell: pwsh
@@ -71,24 +71,33 @@ jobs:
           "Voices: " + (($synth.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }) -join ", ")
           $format = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
           $cases = @(
-            @{ file = "next";  text = "next slide";        expect = "next" },
-            @{ file = "prev";  text = "previous slide";    expect = "prev" },
-            @{ file = "black"; text = "black screen";      expect = "black" },
-            @{ file = "goto";  text = "go to slide five";  expect = "goto:5" },
-            @{ file = "exit";  text = "exit";              expect = "exit" }
+            @{ file = "next";   text = "next slide";                              expect = "next" },
+            @{ file = "next2";  text = "next";                                    expect = "next" },
+            @{ file = "prev";   text = "previous slide";                          expect = "prev" },
+            @{ file = "black";  text = "black screen";                            expect = "black" },
+            @{ file = "goto";   text = "go to slide five";                        expect = "goto:5" },
+            @{ file = "exit";   text = "exit";                                    expect = "exit" },
+            @{ file = "n1";     text = "the weather is nice today";               expect = "none" },
+            @{ file = "n2";     text = "let us look at the next example";         expect = "none" },
+            @{ file = "n3";     text = "he went to the next room and closed the door"; expect = "none" },
+            @{ file = "n4";     text = "this slide shows the results of the experiment"; expect = "none" }
           )
           $failed = 0
+          $py = $env:PY
+          $script = "$env:PKG\VoiceApp\app\presentation_voice.py"
           foreach ($case in $cases) {
             $wav = Join-Path $env:RUNNER_TEMP ("{0}.wav" -f $case.file)
             $synth.SetOutputToWaveFile($wav, $format)
             $synth.Speak($case.text)
             $synth.SetOutputToNull()
-            Write-Host "--- '$($case.text)' -> expect $($case.expect)"
-            & $env:PY -X utf8 -B "$env:PKG\VoiceApp\app\presentation_voice.py" --wav $wav --expect $case.expect
+            Write-Host "--- '$($case.text)' -> expect $($case.expect)   [grammar mode]"
+            & $py -X utf8 -B $script --wav $wav --expect $case.expect
             if ($LASTEXITCODE -ne 0) { $failed++ }
+            Write-Host "    (for comparison) free mode:"
+            & $py -X utf8 -B $script --wav $wav --expect $case.expect --free
           }
           $synth.Dispose()
-          if ($failed -gt 0) { Write-Host "::error::$failed ta nutq sinovi muvaffaqiyatsiz"; exit 1 }
+          if ($failed -gt 0) { Write-Host "::error::$failed ta nutq sinovi (grammar rejimi) muvaffaqiyatsiz"; exit 1 }
 
       - name: START.bat chain (batch file -> embedded Python -> arguments)
         shell: cmd

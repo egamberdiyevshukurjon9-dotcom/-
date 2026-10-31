@@ -52,6 +52,15 @@ class RouterTests(unittest.TestCase):
         self.assertIsNotNone(self.router.handle(Command("next", None, 13.0)))
         self.assertEqual(self.backend.current, 3)
 
+    def test_conflicting_commands_from_one_utterance_keep_the_first(self):
+        # битта овоз: бир модель "keyingi", иккинчиси "orqaga" деб эшитди
+        self.assertIsNotNone(self.router.handle(Command("next", None, 20.0)))
+        self.assertIsNone(self.router.handle(Command("prev", None, 20.1)))
+        self.assertEqual(self.backend.current, 2)
+        # 1 сониядан кейинги ҳақиқий буйруқ бажарилади
+        self.assertIsNotNone(self.router.handle(Command("prev", None, 21.5)))
+        self.assertEqual(self.backend.current, 1)
+
     def test_goto(self):
         self.assertIn("[4/5]", self.router.handle(Command("goto", 4)))
         self.assertIn("йўқ", self.router.handle(Command("goto", 9)))

@@ -223,6 +223,7 @@ class CommandParser:
         self.fillers = [norm(w) for w in FILLER_WORDS]
         self.forward = [norm(w) for w in FORWARD_WORDS]
         self.back = [norm(w) for w in BACK_WORDS]
+        self._extra_raw: List[str] = []
         for intent, words in (extra_words or {}).items():
             if intent not in self.phrases:
                 raise ValueError(
@@ -230,6 +231,7 @@ class CommandParser:
                     % (intent, ", ".join(sorted(self.phrases))))
             self.phrases[intent] = self._unique(
                 self.phrases[intent] + [tokens_of(w) for w in words if tokens_of(w)])
+            self._extra_raw.extend(w for phrase in words for w in str(phrase).split())
 
     @staticmethod
     def _unique(phrases) -> List[List[str]]:
@@ -352,6 +354,30 @@ class CommandParser:
         for base in list(_NUMBERS):  # ўзбекча тартиб сонлар: birinchi, ikkinchi ...
             words.add(base + ("nchi" if base[-1] in "aeiou" else "inchi"))
         return words
+
+    def candidate_words(self) -> Set[str]:
+        """Vosk моделидан қидириладиган сўзларнинг ҳамма ёзилиш вариантлари
+        (лотин, кирил, апостроф шакллари). Моделда борлари грамматикага киради."""
+        raw: Set[str] = set(self._extra_raw)
+        for phrases in INTENT_PHRASES.values():
+            for phrase in phrases:
+                raw.update(phrase.split())
+        for group in (FILLER_WORDS, SLIDE_WORDS, FORWARD_WORDS, BACK_WORDS):
+            raw.update(group)
+        for _, words in _NUMBER_TABLE:
+            for word in words.split():
+                raw.add(word)
+                if word.isalpha() or "'" in word:  # ўзбекча тартиб сонлар: birinchi, ikkinchi ...
+                    raw.add(word + ("nchi" if word[-1] in "aeiou" else "inchi"))
+        variants: Set[str] = set()
+        for word in raw:
+            word = word.lower()
+            variants.update((word, norm(word)))
+            if any(mark in word for mark in _APOSTROPHES):
+                variants.add("".join(c for c in word if c not in _APOSTROPHES))
+                for mark in ("'", "ʻ", "’"):
+                    variants.add(re.sub("[" + re.escape(_APOSTROPHES) + "]", mark, word))
+        return {v for v in variants if v}
 
     def coverage(self, available: Set[str]) -> Dict[str, List[str]]:
         """Моделнинг луғатида тўлиқ мавжуд бўлган иборалар (ҳар бир буйруқ учун)."""

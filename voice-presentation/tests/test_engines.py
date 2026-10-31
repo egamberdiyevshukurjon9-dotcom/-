@@ -12,8 +12,8 @@ import _setup  # noqa: F401
 import engines
 from audio import RATE, Segment
 from commands import Command, CommandParser
-from engines import (GoogleEngine, VoskEngine, ascii_safe_path, build_engines, build_grammar,
-                     discover_models, guess_language, load_engines, read_vocabulary,
+from engines import (GoogleEngine, VoskEngine, ascii_safe_path, build_engines,
+                     discover_models, find_known_words, guess_language, load_engines,
                      read_wav_pcm, texts_from_result)
 from errors import EngineError
 
@@ -56,9 +56,21 @@ class FakeRecognizer:
         return json.dumps({"text": ""})
 
 
+class FakeModel:
+    """Vosk Model: луғати graph/words.txt дан (фақат синов учун); find_word -1 ёки ID қайтаради."""
+
+    def __init__(self, path):
+        self.path = path
+        words_file = Path(path) / "graph" / "words.txt"
+        lines = words_file.read_text(encoding="utf-8").splitlines() if words_file.exists() else []
+        self.ids = {line.split(" ")[0]: int(line.split(" ")[1]) for line in lines if " " in line}
+
+    def vosk_model_find_word(self, word):
+        return self.ids.get(word, -1)
+
+
 FAKE_VOSK = SimpleNamespace(
-    SetLogLevel=lambda level: None, Model=lambda path: SimpleNamespace(path=path),
-    KaldiRecognizer=FakeRecognizer)
+    SetLogLevel=lambda level: None, Model=FakeModel, KaldiRecognizer=FakeRecognizer)
 
 
 class ModelDiscoveryTests(unittest.TestCase):
@@ -82,26 +94,18 @@ class ModelDiscoveryTests(unittest.TestCase):
             self.assertEqual(sorted(discover_models(root, ["uz"])), ["uz"])
             self.assertEqual(discover_models(root / "yo'q"), {})
 
-    def test_vocabulary_and_grammar(self):
-        parser = CommandParser()
-        with tempfile.TemporaryDirectory() as tmp:
-            model = make_model(Path(tmp), "uz", ["keyingisi", "кейингиси", "slayd", "o'tkaz",
-                                                 "bugun", "besh", "x" * 40])
-            vocabulary = read_vocabulary(model)
-            self.assertNotIn("eps", vocabulary)
-            self.assertEqual(sorted(vocabulary["keyingisi"]), ["keyingisi", "кейингиси"])
-            words, missing = build_grammar(parser, vocabulary)
-            self.assertIn("keyingisi", words)
-            self.assertIn("кейингиси", words)
-            self.assertIn("o'tkaz", words)
-            self.assertNotIn("bugun", words)   # буйруқ сўзи эмас
-            self.assertIn("oldingi", missing)
+    def test_candidate_words_cover_all_spellings(self):
+        candidates = CommandParser().candidate_words()
+        for word in ["keyingisi", "кейинги", "o'tkaz", "otkaz", "oʻtkaz", "beshinchi", "to'rtinchi",
+                     "ikkinchi", "yigirmanchi", "назад", "вперёд", "next", "slayd"]:
+            self.assertIn(word, candidates, word)
 
-    def test_no_vocabulary_file(self):
+    def test_find_known_words_uses_model_lookup(self):
         with tempfile.TemporaryDirectory() as tmp:
-            model = Path(tmp) / "uz"
-            (model / "am").mkdir(parents=True)
-            self.assertIsNone(read_vocabulary(model))
+            model = FakeModel(make_model(Path(tmp), "uz", ["keyingisi", "slayd", "bugun"]))
+            known = find_known_words(model, {"keyingisi", "slayd", "oldingi", "bugun"})
+            self.assertEqual(known, ["bugun", "keyingisi", "slayd"])  # луғатда борларнинг ҳаммаси
+            self.assertEqual(find_known_words(model, {"oldingi"}), [])
 
     def test_texts_from_result(self):
         self.assertEqual(texts_from_result('{"text": "keyingi"}'), ["keyingi"])
@@ -145,12 +149,14 @@ class VoskEngineTests(unittest.TestCase):
         engine.load()
         recognizer = FakeRecognizer.instances[0]
         grammar = json.loads(recognizer.grammar)
-        self.assertIn("keyingisi", grammar)
-        self.assertIn("[unk]", grammar)
-        self.assertNotIn("bugun", grammar)
+        self.assertEqual(sorted(grammar), ["[unk]", "keyingisi", "oldingi", "slayd"])
         self.assertEqual(recognizer.alternatives, 3)
-        self.assertIn("oldingi", engine.report["uz"]["coverage"]["prev"])
-        self.assertIn("next", engine.report["uz"]["coverage"])
+        report = engine.report["uz"]
+        self.assertEqual(report["grammar_words"], 3)
+        self.assertEqual(report["coverage"]["prev"], ["oldingi"])
+        self.assertEqual(report["coverage"]["next"], ["keyingisi"])
+        self.assertEqual(report["coverage"]["exit"], [])
+        self.assertIn("orqaga", report["missing"])
 
     def test_free_mode_has_no_grammar(self):
         self.engine(vosk_grammar=False).load()
@@ -163,6 +169,40 @@ class VoskEngineTests(unittest.TestCase):
             engine.feed(b"\x00" * 3200, stamp)
         self.assertEqual(self.emitted, [Command("next")])
         self.assertEqual(self.emitted[0].at, 1.2)
+
+    def test_models_follow_configured_priority(self):
+        root = Path(self.tmp.name)
+        make_model(root, "ru")
+        make_model(root, "en")
+        self.assertEqual(list(discover_models(root, ["uz", "ru", "en"])), ["uz", "ru", "en"])
+        self.assertEqual(list(discover_models(root, ["en", "uz"])), ["en", "uz"])
+
+    def test_conflicting_models_emit_only_the_priority_one(self):
+        root = Path(self.tmp.name)
+        make_model(root, "ru", ["назад"])
+        engine = VoskEngine(CONFIG, CommandParser(), self.emitted.append,
+                            {"uz": self.models["uz"], "ru": make_model(root, "ru")},
+                            vosk_module=FAKE_VOSK)
+        engine.load()
+        uz, ru = FakeRecognizer.instances[-2:]
+        uz.reply = {"alternatives": [{"text": "keyingisi"}]}
+        ru.reply = {"alternatives": [{"text": "назад"}]}
+        for stamp in (1.0, 1.1, 1.2):
+            engine.feed(b"\x00" * 3200, stamp)
+        self.assertEqual(self.emitted, [Command("next")])
+
+    def test_lower_priority_model_is_used_when_first_hears_nothing(self):
+        root = Path(self.tmp.name)
+        engine = VoskEngine(CONFIG, CommandParser(), self.emitted.append,
+                            {"uz": self.models["uz"], "ru": make_model(root, "ru")},
+                            vosk_module=FAKE_VOSK)
+        engine.load()
+        uz, ru = FakeRecognizer.instances[-2:]
+        uz.reply = {"alternatives": [{"text": "unk"}]}
+        ru.reply = {"alternatives": [{"text": "назад"}]}
+        for stamp in (1.0, 1.1, 1.2):
+            engine.feed(b"\x00" * 3200, stamp)
+        self.assertEqual(self.emitted, [Command("prev")])
 
     def test_non_command_speech_is_ignored(self):
         engine = self.engine()

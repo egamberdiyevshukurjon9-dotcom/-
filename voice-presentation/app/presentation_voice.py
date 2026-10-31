@@ -9,6 +9,7 @@
     presentation_voice.py --mic-test         микрофон баландлигини кўрсатиш
     presentation_voice.py --list-mics        микрофонлар рўйхати
     presentation_voice.py --wav f.wav --expect next   овоз файлини офлайн таниш синови
+    presentation_voice.py --word-check keyingi,oldingi   сўзлар Vosk моделида борми
 """
 import sys
 
@@ -34,7 +35,7 @@ from typing import List, Optional, Tuple  # noqa: E402
 from audio import AudioInput, rms  # noqa: E402
 from backends import Backend, DryRunBackend, KeyboardBackend, PowerPointBackend  # noqa: E402
 from commands import Command, CommandParser  # noqa: E402
-from engines import (VoskEngine, discover_models, load_engines, read_vocabulary,  # noqa: E402
+from engines import (VoskEngine, ascii_safe_path, discover_models, load_engines,  # noqa: E402
                      read_wav_pcm)
 from errors import AudioError, EngineError, SetupError  # noqa: E402
 from router import HELP_TEXT, CommandRouter  # noqa: E402
@@ -448,6 +449,9 @@ def wav_test(path: str, expect: Optional[str], config: dict, parser: CommandPars
         if command:
             found.append(command)
     if expect:
+        if expect == "none":  # оддий гап: ҳеч қандай буйруқ топилмаслиги керак
+            print("EXPECT none: %s" % ("OK" if not found else "FAIL"))
+            return 0 if not found else 1
         intent, _, arg = expect.partition(":")
         wanted = [c for c in found if c.intent == intent and (not arg or c.arg == int(arg))]
         print("EXPECT %s: %s" % (expect, "OK" if wanted else "FAIL"))
@@ -455,16 +459,28 @@ def wav_test(path: str, expect: Optional[str], config: dict, parser: CommandPars
     return 0
 
 
-def vocab_grep(prefixes: str, config: dict) -> int:
-    """Модел луғатидан берилган бошланишдаги сўзларни кўрсатади (синоним танлаш учун)."""
-    prefixes_ = [p.strip().lower() for p in prefixes.split(",") if p.strip()]
-    for language, path in discover_models(models_root(config)).items():
-        vocabulary = read_vocabulary(path) or {}
-        print("== %s: %d та сўз" % (language, len(vocabulary)))
-        for prefix in prefixes_:
-            keys = sorted(k for k in vocabulary if k.startswith(prefix))
-            raw = [w for k in keys for w in vocabulary[k]]
-            print("  %s* (%d): %s" % (prefix, len(keys), ", ".join(raw[:30])))
+def word_check(spec: str, config: dict) -> int:
+    """Берилган сўзлар Vosk моделларида борми? ("a,b,c" ёки "@файл.txt", ҳар қаторда битта сўз)."""
+    if spec.startswith("@"):
+        lines = Path(spec[1:]).read_text(encoding="utf-8-sig").splitlines()
+        words = [w.strip() for w in lines if w.strip() and not w.lstrip().startswith("#")]
+    else:
+        words = [w.strip() for w in spec.split(",") if w.strip()]
+    models = discover_models(models_root(config), config["vosk_models"] or None)
+    if not models:
+        raise EngineError("Vosk моделлари топилмади: %s" % models_root(config))
+    try:
+        import vosk
+        vosk.SetLogLevel(-1)
+    except (ImportError, OSError) as error:
+        raise EngineError("Vosk юкланмади: %s" % error)
+    for language, path in models.items():
+        model = vosk.Model(ascii_safe_path(path))
+        found = [w for w in words if model.vosk_model_find_word(w) > 0]
+        missing = [w for w in words if w not in found]
+        print("== %s: %d/%d сўз моделда бор" % (language, len(found), len(words)))
+        print("   БОР:   %s" % ", ".join(found))
+        print("   ЙЎҚ:   %s" % ", ".join(missing))
     return 0
 
 
@@ -566,8 +582,10 @@ def main(argv=None) -> int:
     ap.add_argument("--mic-test", action="store_true", help="микрофон баландлигини кўрсатиш")
     ap.add_argument("--list-mics", action="store_true", help="микрофонлар рўйхати")
     ap.add_argument("--wav", help="овоз файлини (16 кГц моно) Vosk билан таниш")
-    ap.add_argument("--expect", help="--wav билан: кутилган буйруқ (next, goto:5)")
-    ap.add_argument("--vocab-grep", help="модел луғатида сўз қидириш: keyin,oldin,orqa")
+    ap.add_argument("--expect", help="--wav билан: кутилган буйруқ (next, goto:5) ёки none")
+    ap.add_argument("--free", action="store_true",
+                    help="Vosk грамматикасиз (эркин таниш) — таққослаш учун")
+    ap.add_argument("--word-check", help="сўзлар моделда борми: a,b,c ёки @файл.txt")
     ap.add_argument("--verbose", action="store_true", help="эшитилган ҳамма матнни кўрсатиш")
     args = ap.parse_args(argv)
 
@@ -575,6 +593,8 @@ def main(argv=None) -> int:
     config = load_config(folder)
     if args.engine:
         config["engine"] = args.engine
+    if args.free:
+        config["vosk_grammar"] = False
     if args.test or args.verbose:
         config["verbose"] = True
     setup_logging(folder, config["log_file"])
@@ -590,8 +610,8 @@ def main(argv=None) -> int:
             return selftest(config, parser)
         if args.wav:
             return wav_test(args.wav, args.expect, config, parser)
-        if args.vocab_grep:
-            return vocab_grep(args.vocab_grep, config)
+        if args.word_check:
+            return word_check(args.word_check, config)
         if args.watch:
             watch(args, config, parser)
             return 0
