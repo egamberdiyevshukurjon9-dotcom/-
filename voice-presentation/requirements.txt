@@ -1,4 +1,5 @@
-SpeechRecognition>=3.10
-PyAudio>=0.2.14
-pyautogui>=0.9.54
+# Ишлаб чиқиш учун (тайёр флешка пакетига улар tools/build_flash.py орқали ўзи қўшилади)
+vosk==0.3.45
+sounddevice>=0.5
+SpeechRecognition==3.11.0
 pywin32>=306; sys_platform == "win32"
