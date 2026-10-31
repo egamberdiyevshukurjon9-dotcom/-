@@ -1,0 +1,26 @@
+{
+  "_izoh": "Қаторлар JSON'да изоҳсиз. Ўзгартирсангиз — файлни сақлаб, дастурни қайта ишга туширинг. Тушунтириш: ИЗОХ.txt",
+
+  "engine": "auto",
+  "vosk_models": ["uz", "ru", "en"],
+  "vosk_grammar": true,
+  "languages": ["uz-UZ"],
+
+  "mic": null,
+  "max_words": 4,
+  "cooldown_seconds": 1.5,
+  "fuzzy_threshold": 0.85,
+  "wake_word": "",
+  "extra_words": {},
+
+  "talk_minutes": 0,
+  "warn_minutes": 1,
+  "timer_beep": true,
+  "beep": false,
+  "auto_default_seconds": 15,
+
+  "preferred_names": ["presentation", "taqdimot", "prezentatsiya"],
+  "include_fixed_drives": false,
+  "log_file": "",
+  "verbose": false
+}

@@ -1,0 +1,135 @@
+name: Build flash package
+
+on:
+  push:
+    paths:
+      - "voice-presentation/**"
+      - ".github/workflows/build-flash.yml"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Тайёр пакетни GitHub Release сифатида эълон қилиш"
+        type: boolean
+        default: false
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        run: python -m unittest discover -s voice-presentation/tests -v
+
+  build-windows:
+    needs: unit-tests
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PKG: voice-presentation\dist\VoicePresentation-Flash
+      PY: voice-presentation\dist\VoicePresentation-Flash\VoiceApp\runtime\python.exe
+      VOICE_NOPAUSE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the flash package (Python + libraries + Vosk models)
+        run: python voice-presentation/tools/build_flash.py
+
+      - name: Bundle contents
+        shell: pwsh
+        run: |
+          Get-Content "$env:PKG\VoiceApp\VERSION.txt"
+          Get-ChildItem "$env:PKG\VoiceApp\models" | ForEach-Object { "{0}: {1:N0} MB" -f $_.Name, ((Get-ChildItem $_.FullName -Recurse -File | Measure-Object Length -Sum).Sum / 1MB) }
+
+      - name: Unit tests with the bundled Python
+        run: '%PY% -X utf8 -B -m unittest discover -s voice-presentation\tests -v'
+        shell: cmd
+
+      - name: Smoke test - imports, COM, DLLs
+        run: '%PY% -X utf8 -B voice-presentation\tools\ci_smoke.py'
+        shell: cmd
+
+      - name: Vosk models - vocabulary and command coverage
+        continue-on-error: true
+        shell: cmd
+        run: |
+          %PY% -X utf8 -B %PKG%\VoiceApp\app\presentation_voice.py --selftest --verbose
+          echo ===== uz vocabulary lookup =====
+          %PY% -X utf8 -B %PKG%\VoiceApp\app\presentation_voice.py --vocab-grep keyin,keying,oldin,oldingi,orqa,ortga,bosh,oxir,tugat,chiq,slayd,slayt,ekran,qora,oq,davom,avto,holat,vaqt,izoh,mundar,jim,tingla,korsat,otkaz,otish,qayt,yop,yordam,buyruq,soniya,iltimos,besh,bir,ikki
+
+      - name: Offline recognition with real English speech (Windows TTS -> Vosk)
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Speech
+          $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          "Voices: " + (($synth.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }) -join ", ")
+          $format = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
+          $cases = @(
+            @{ file = "next";  text = "next slide";        expect = "next" },
+            @{ file = "prev";  text = "previous slide";    expect = "prev" },
+            @{ file = "black"; text = "black screen";      expect = "black" },
+            @{ file = "goto";  text = "go to slide five";  expect = "goto:5" },
+            @{ file = "exit";  text = "exit";              expect = "exit" }
+          )
+          $failed = 0
+          foreach ($case in $cases) {
+            $wav = Join-Path $env:RUNNER_TEMP ("{0}.wav" -f $case.file)
+            $synth.SetOutputToWaveFile($wav, $format)
+            $synth.Speak($case.text)
+            $synth.SetOutputToNull()
+            Write-Host "--- '$($case.text)' -> expect $($case.expect)"
+            & $env:PY -X utf8 -B "$env:PKG\VoiceApp\app\presentation_voice.py" --wav $wav --expect $case.expect
+            if ($LASTEXITCODE -ne 0) { $failed++ }
+          }
+          $synth.Dispose()
+          if ($failed -gt 0) { Write-Host "::error::$failed ta nutq sinovi muvaffaqiyatsiz"; exit 1 }
+
+      - name: START.bat chain (batch file -> embedded Python -> arguments)
+        shell: cmd
+        run: |
+          %PKG%\START.bat --list-mics
+          %PKG%\START.bat --wav %RUNNER_TEMP%\next.wav --expect next
+
+      - name: Run from a folder with spaces and Cyrillic letters (flash on any PC)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "Тест папка Иванов"
+          Copy-Item -Recurse $env:PKG $dest
+          $wav = Join-Path $env:RUNNER_TEMP "next.wav"
+          & (Join-Path $dest "VoiceApp\runtime\python.exe") -X utf8 -B (Join-Path $dest "VoiceApp\app\presentation_voice.py") --wav $wav --expect next
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Upload the flash package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoicePresentation-Flash
+          path: voice-presentation/dist/VoicePresentation-Flash.zip
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: warn
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.release
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: VoicePresentation-Flash
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "flash-${{ github.run_number }}" VoicePresentation-Flash.zip \
+            --repo "${{ github.repository }}" \
+            --title "Флешка пакети #${{ github.run_number }}" \
+            --notes "Архивни очиб, ичидаги ҳамма нарсани флешкага нусхаланг. START.bat — ишга тушириш."

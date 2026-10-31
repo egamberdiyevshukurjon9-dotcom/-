@@ -5,13 +5,15 @@
     фокусига боғлиқ эмас, слайд рақамини билади, охирги слайдда шоу ёпилиб
     кетишининг олдини олади).
   * KeyboardBackend   — F5, ←, → тугмаларини босади (LibreOffice, WPS, .odp
-    ва PowerPoint COM ишламаган ҳолатлар учун заҳира).
+    ва PowerPoint COM ишламаган ҳолатлар учун заҳира; ташқи кутубхонасиз).
   * DryRunBackend     — ҳеч нима очмайди, фақат ҳолатни ҳисоблайди
     (микрофонни синаш ва тестлар учун).
 """
 import os
 import time
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
+
+import winkeys
 
 PP_SLIDESHOW_RUNNING = 1
 PP_SLIDESHOW_BLACK = 3
@@ -36,6 +38,8 @@ class Backend:
     def unblank(self) -> None: ...
     def exit_show(self) -> None: ...
     def close(self) -> None: ...
+    def notes(self) -> Optional[str]: return None            # None — бу режимда йўқ
+    def titles(self) -> Optional[List[str]]: return None
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +91,8 @@ class DryRunBackend(Backend):
     def white(self): self.blank = "white"
     def unblank(self): self.blank = None
     def exit_show(self): self.running = False
+    def notes(self): return "Синов изоҳи (%d-слайд)" % self.current
+    def titles(self): return ["Синов слайди %d" % i for i in range(1, self.total + 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +228,36 @@ class PowerPointBackend(Backend):
         if view is not None:
             view.Exit()
 
+    def notes(self):
+        view = self._view()
+        if view is None:
+            return ""
+        try:
+            page = self.pres.Slides.Item(view.Slide.SlideIndex).NotesPage
+            texts = []
+            for shape in page.Shapes:
+                try:
+                    if shape.PlaceholderFormat.Type == 2 and shape.HasTextFrame:  # ppPlaceholderBody
+                        texts.append(shape.TextFrame.TextRange.Text)
+                except Exception:
+                    pass
+            return "\n".join(t.strip() for t in texts if t.strip())
+        except Exception:
+            return ""
+
+    def titles(self):
+        titles = []
+        try:
+            for index in range(1, self.pres.Slides.Count + 1):
+                slide = self.pres.Slides.Item(index)
+                try:
+                    titles.append(slide.Shapes.Title.TextFrame.TextRange.Text if slide.Shapes.HasTitle else "")
+                except Exception:
+                    titles.append("")
+        except Exception:
+            return None
+        return titles
+
     def close(self):
         if self.pres is None:
             return
@@ -245,11 +281,9 @@ class KeyboardBackend(Backend):
     """Тугмалар симуляцияси: энг содда, лекин фаол ойнага боғлиқ."""
     name = "Клавиатура (F5, стрелкалар)"
 
-    def __init__(self, open_delay: float = 5.0):
-        import pyautogui
-        pyautogui.FAILSAFE = False  # сичқонча бурчакда турса ҳам исиб кетмасин
-        pyautogui.PAUSE = 0.05
-        self.pg = pyautogui
+    def __init__(self, open_delay: float = 6.0):
+        if not winkeys.available():
+            raise OSError("Клавиатура режими фақат Windows'да ишлайди")
         self.open_delay = open_delay
         self.running = False
         self._blank: Optional[str] = None
@@ -259,7 +293,7 @@ class KeyboardBackend(Backend):
         time.sleep(self.open_delay)
 
     def start(self):
-        self.pg.press("f5")
+        winkeys.press("f5")
         self.running = True
 
     def is_running(self):
@@ -267,33 +301,33 @@ class KeyboardBackend(Backend):
 
     def _unblank_keys(self):
         if self._blank:
-            self.pg.press(self._blank)
+            winkeys.press(self._blank)
             self._blank = None
 
-    def next(self): self._unblank_keys(); self.pg.press("right"); return True
-    def prev(self): self._unblank_keys(); self.pg.press("left"); return True
-    def first(self): self._unblank_keys(); self.pg.press("home")
-    def last(self): self._unblank_keys(); self.pg.press("end")
+    def next(self): self._unblank_keys(); winkeys.press("right"); return True
+    def prev(self): self._unblank_keys(); winkeys.press("left"); return True
+    def first(self): self._unblank_keys(); winkeys.press("home")
+    def last(self): self._unblank_keys(); winkeys.press("end")
 
     def goto(self, number):
         self._unblank_keys()
-        self.pg.write(str(number))
-        self.pg.press("enter")
+        winkeys.type_digits(str(number))
+        winkeys.press("enter")
         return True
 
     def black(self):
         self._unblank_keys()
-        self.pg.press("b")
+        winkeys.press("b")
         self._blank = "b"
 
     def white(self):
         self._unblank_keys()
-        self.pg.press("w")
+        winkeys.press("w")
         self._blank = "w"
 
     def unblank(self): self._unblank_keys()
 
     def exit_show(self):
         self._unblank_keys()
-        self.pg.press("esc")
+        winkeys.press("esc")
         self.running = False

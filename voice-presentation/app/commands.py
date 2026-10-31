@@ -16,7 +16,7 @@
 """
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -98,12 +98,14 @@ for _value, _words in _NUMBER_TABLE:
         _NUMBERS[norm(_word)] = _value
 
 # ўзбекча тартиб сонлар: birinchi, ikkinchi, uchinchi, beshinchi, yigirmanchi ...
-_ORDINAL_SUFFIXES = ("inchi", "nchi", "chi")
+_ORDINAL_SUFFIXES = ("inchi", "nchi", "chi", "ta")  # ... ва "beshta", "ikkita"
 
 
 def word_to_number(token: str) -> Optional[int]:
     if token in _NUMBERS:
         return _NUMBERS[token]
+    if token == "bitta":
+        return 1
     for suffix in _ORDINAL_SUFFIXES:
         if token.endswith(suffix) and token[: -len(suffix)] in _NUMBERS:
             return _NUMBERS[token[: -len(suffix)]]
@@ -147,7 +149,9 @@ def parse_number(tokens: Sequence[str]) -> Optional[int]:
 @dataclass(frozen=True)
 class Command:
     intent: str
-    arg: Optional[int] = None  # "goto" учун слайд рақами
+    arg: Optional[int] = None  # goto: слайд рақами; jump: ±слайдлар сони; auto_on: сония
+    # Овоз қачон айтилгани (time.monotonic). Икки мотордан келган бир хил буйруқни аниқлаш учун.
+    at: Optional[float] = field(default=None, compare=False)
 
 
 # Ҳар бир буйруқ учун иборалар (лотин, кирил, рус, инглиз — барчаси бирга).
@@ -171,7 +175,17 @@ INTENT_PHRASES: Dict[str, List[str]] = {
     "exit": ["chiqish", "chiq", "tugat", "tugatish", "yop",
              "выход", "закрыть", "exit", "quit", "close"],
     "help": ["yordam", "buyruqlar", "помощь", "help"],
+    "status": ["holat", "vaqt", "qancha vaqt qoldi", "состояние", "время", "status"],
+    "notes": ["izoh", "izohlar", "eslatma", "eslatmalar", "заметки", "notes"],
+    "outline": ["mundarija", "ro'yxat", "оглавление", "список", "outline"],
+    "auto_on": ["avtomatik", "avto", "avtomat", "автомат", "auto", "autoplay"],
+    "auto_off": ["qo'lda", "qo'lda boshqar", "avtomatikni o'chir", "avtomatikni to'xtat",
+                 "avtomatik to'xta", "вручную", "manual"],
 }
+
+# "2 slayd oldinga" / "3 slayd orqaga" — нисбий ўтиш
+FORWARD_WORDS = ["oldinga", "forward", "вперёд", "ahead"]
+BACK_WORDS = ["orqaga", "ortga", "back", "назад", "backward"]
 
 # слайд сўзи: "5 slayd", "slayd 5", "beshinchi slayd", "5-slaydga o'tish"
 SLIDE_WORDS = ["slayd", "slaydga", "slaydni", "slide", "слайд", "sahifa", "bet"]
@@ -185,7 +199,9 @@ FILLER_WORDS = [
     "qayt", "qaytish", "qaytar", "iltimos", "endi", "hozir", "keling", "marhamat",
     "ga", "ni", "ekran", "ekranga",
     "пожалуйста", "теперь", "перейди", "перейти", "переключи", "давай", "на",
-    "please", "go", "to", "the", "now", "and",
+    "please", "go", "to", "the", "now", "and", "screen",
+    "soniya", "soniyada", "soniyadan", "sekund", "sekundda", "second", "seconds",
+    "секунд", "секунды", "секунда",
 ]
 
 # Айрим буйруқлар учун жумладаги сўзлар сони чекланган (тасодифан ишга тушмаслиги учун).
@@ -200,17 +216,30 @@ class CommandParser:
         self.max_words = max_words
         self.wake = norm(wake_word) if wake_word else ""
         self.phrases: Dict[str, List[List[str]]] = {
-            intent: [tokens_of(p) for p in phrases]
+            intent: self._unique(tokens_of(p) for p in phrases)
             for intent, phrases in INTENT_PHRASES.items()
         }
         self.slide_words = [norm(w) for w in SLIDE_WORDS]
         self.fillers = [norm(w) for w in FILLER_WORDS]
+        self.forward = [norm(w) for w in FORWARD_WORDS]
+        self.back = [norm(w) for w in BACK_WORDS]
         for intent, words in (extra_words or {}).items():
             if intent not in self.phrases:
                 raise ValueError(
                     "extra_words: номаълум буйруқ '%s' (мумкин: %s)"
                     % (intent, ", ".join(sorted(self.phrases))))
-            self.phrases[intent].extend(tokens_of(w) for w in words if tokens_of(w))
+            self.phrases[intent] = self._unique(
+                self.phrases[intent] + [tokens_of(w) for w in words if tokens_of(w)])
+
+    @staticmethod
+    def _unique(phrases) -> List[List[str]]:
+        """Кирил ва лотин ёзуви бир хил бўлиб қолган такрорларни олиб ташлайди."""
+        seen, result = set(), []
+        for phrase in phrases:
+            if phrase and tuple(phrase) not in seen:
+                seen.add(tuple(phrase))
+                result.append(phrase)
+        return result
 
     # -- умумий кириш нуқтаси ------------------------------------------------
     def parse(self, texts: Iterable[str]) -> Optional[Command]:
@@ -232,6 +261,12 @@ class CommandParser:
         goto = self._goto(tokens)
         if goto is not None:
             number, used = goto
+            direction, direction_used = self._direction(tokens, used)
+            if direction:
+                used = used | direction_used
+                if number < 1 or not self._only_fillers(tokens, used):
+                    return None
+                return Command("jump", direction * number)
             return Command("goto", number) if self._only_fillers(tokens, used) else None
 
         scored = sorted(
@@ -245,9 +280,26 @@ class CommandParser:
             return None
         if len(tokens) > MAX_WORDS_FOR_INTENT.get(best, self.max_words):
             return None
+        arg = None
+        if best == "auto_on":  # "avtomatik 20 soniya"
+            found = parse_number_span(tokens)
+            if found:
+                arg = found[0]
+                used = used | set(found[1])
         if not self._only_fillers(tokens, used):
             return None
-        return Command(best)
+        return Command(best, arg)
+
+    def _direction(self, tokens: List[str], used: Set[int]) -> Tuple[int, Set[int]]:
+        """"oldinga" (+1) ёки "orqaga" (-1) сўзини топади."""
+        for index, tok in enumerate(tokens):
+            if index in used:
+                continue
+            if any(similarity(tok, w, self.threshold) > 0 for w in self.forward):
+                return 1, {index}
+            if any(similarity(tok, w, self.threshold) > 0 for w in self.back):
+                return -1, {index}
+        return 0, set()
 
     def _only_fillers(self, tokens: List[str], used: Set[int]) -> bool:
         return all(
@@ -286,3 +338,24 @@ class CommandParser:
                     if score > best:
                         best, best_used = score, set(range(start, start + size))
         return best, best_used
+
+
+    # -- Vosk учун луғат ------------------------------------------------------------
+    def vocabulary(self) -> Set[str]:
+        """Буйруқларни айтиш учун керак бўлган барча (меъёрлаштирилган) сўзлар."""
+        words: Set[str] = set()
+        for phrases in self.phrases.values():
+            for phrase in phrases:
+                words.update(phrase)
+        for group in (self.fillers, self.slide_words, self.forward, self.back, _NUMBERS):
+            words.update(group)
+        for base in list(_NUMBERS):  # ўзбекча тартиб сонлар: birinchi, ikkinchi ...
+            words.add(base + ("nchi" if base[-1] in "aeiou" else "inchi"))
+        return words
+
+    def coverage(self, available: Set[str]) -> Dict[str, List[str]]:
+        """Моделнинг луғатида тўлиқ мавжуд бўлган иборалар (ҳар бир буйруқ учун)."""
+        return {
+            intent: [" ".join(p) for p in phrases if all(t in available for t in p)]
+            for intent, phrases in self.phrases.items()
+        }
