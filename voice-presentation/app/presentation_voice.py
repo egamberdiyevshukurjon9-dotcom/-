@@ -13,6 +13,11 @@
 import sys
 
 sys.dont_write_bytecode = True  # флешкада __pycache__ ёзилмасин
+for _stream in (sys.stdout, sys.stderr):  # кирил ёзув Windows консолида (cp1252/cp866) бузилмасин
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 from pathlib import Path  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))

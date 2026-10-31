@@ -43,6 +43,12 @@ VOSK_REQUIREMENT = "vosk==0.3.45"
 REQUIREMENTS = ["cffi", "requests", "tqdm", "colorama", "websockets",
                 "sounddevice", "pywin32", "SpeechRecognition==3.11.0"]
 
+for _stream in (sys.stdout, sys.stderr):  # Windows консоли (cp1252) кирил ёзувни чиқара олмайди
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+
 ROOT = Path(__file__).resolve().parent.parent      # voice-presentation/
 USER_AGENT = "voice-presentation-build/1.0"
 
