@@ -4,6 +4,7 @@ setlocal
 set "VOICE_ROOT=%~dp0"
 set "APP=%~dp0VoiceApp"
 set "PY=%APP%\runtime\python.exe"
+set "RC=1"
 title Ovozli prezentatsiya
 
 if not exist "%PY%" (
@@ -14,10 +15,10 @@ if not exist "%PY%" (
 
 "%PY%" -X utf8 -B "%APP%\app\presentation_voice.py" %*
 set "RC=%ERRORLEVEL%"
-if "%RC%"=="0" goto :eof
+if "%RC%"=="0" exit /b 0
 echo.
 echo Dastur xato bilan tugadi (kod %RC%). Sababini topish uchun TEST.bat ni ishga tushiring.
 :fail
 echo.
-if defined VOICE_NOPAUSE goto :eof
-pause
+if not defined VOICE_NOPAUSE pause
+exit /b %RC%

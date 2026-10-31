@@ -122,6 +122,31 @@ jobs:
           & (Join-Path $dest "VoiceApp\runtime\python.exe") -X utf8 -B (Join-Path $dest "VoiceApp\app\presentation_voice.py") --wav $wav --expect next
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      - name: Autostart installer (INSTALL -> works from installed copy -> UNINSTALL)
+        shell: pwsh
+        run: |
+          $startup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
+          $launcher = Join-Path $startup "VoicePresentationWatcher.bat"
+          $target = Join-Path $env:ProgramData "VoicePresentation"
+          New-Item -ItemType Directory -Force $startup | Out-Null
+          cmd /c "$env:PKG\INSTALL_AUTOSTART.bat"
+          if ($LASTEXITCODE -ne 0) { throw "INSTALL_AUTOSTART.bat exit code $LASTEXITCODE" }
+          Start-Sleep -Seconds 6
+          if (-not (Test-Path "$target\runtime\python.exe")) { throw "runtime was not copied" }
+          if (-not (Test-Path "$target\models\uz\am\final.mdl")) { throw "models were not copied" }
+          if (-not (Test-Path $launcher)) { throw "startup launcher was not created" }
+          "--- launcher:"; Get-Content $launcher
+          $watchers = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*presentation_voice.py*--watch*" }
+          "watcher processes: $(@($watchers).Count)"
+          if (@($watchers).Count -lt 1) { throw "watcher is not running" }
+          & "$target\runtime\python.exe" -X utf8 -B "$target\app\presentation_voice.py" --wav "$env:RUNNER_TEMP\next.wav" --expect next
+          if ($LASTEXITCODE -ne 0) { throw "recognition from the installed copy failed" }
+          $watchers | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          Start-Sleep -Seconds 2
+          cmd /c "$env:PKG\UNINSTALL_AUTOSTART.bat"
+          if ($LASTEXITCODE -ne 0) { throw "UNINSTALL_AUTOSTART.bat exit code $LASTEXITCODE" }
+          if ((Test-Path $target) -or (Test-Path $launcher)) { throw "uninstall left files behind" }
+
       - name: Upload the flash package
         if: always()
         uses: actions/upload-artifact@v4

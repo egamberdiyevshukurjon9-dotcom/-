@@ -1,6 +1,7 @@
 @echo off
 chcp 65001 >nul
 setlocal
+set "RC=1"
 set "SRC=%~dp0VoiceApp"
 set "TARGET=%ProgramData%\VoicePresentation"
 set "LAUNCHER=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\VoicePresentationWatcher.bat"
@@ -24,6 +25,7 @@ echo.
 echo Tayyor. Endi fleshka ulansa (ichida presentation.pptx bo'lsa) taqdimot o'zi ochiladi.
 echo Sozlamalar fayli: %TARGET%\config.json
 echo O'chirish uchun: UNINSTALL_AUTOSTART.bat
+set "RC=0"
 goto :end
 
 :copyfail
@@ -31,5 +33,5 @@ echo Nusxalashda xatolik. Disk joyi yetarli ekanini tekshiring.
 
 :end
 echo.
-if defined VOICE_NOPAUSE goto :eof
-pause
+if not defined VOICE_NOPAUSE pause
+exit /b %RC%
