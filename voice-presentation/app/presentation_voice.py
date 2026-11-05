@@ -213,6 +213,16 @@ def find_presentation(folder: Path, preferred_names=("presentation",)) -> Option
     return None
 
 
+def other_presentations(folder: Path, chosen: Path) -> int:
+    """Шу папкадаги танланганидан бошқа презентациялар сони."""
+    try:
+        return sum(1 for p in folder.iterdir()
+                   if p.is_file() and p.suffix.lower() in PRESENTATION_EXTENSIONS
+                   and not p.name.startswith("~$") and p != chosen)
+    except OSError:
+        return 0
+
+
 def list_drives(include_fixed: bool = False) -> List[Path]:
     """Уланган флешкаларнинг (олинадиган дисклар) рўйхати. Фақат Windows."""
     if sys.platform != "win32":
@@ -689,6 +699,9 @@ def selftest(config: dict, parser: CommandParser) -> int:
 # ---------------------------------------------------------------------------
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Презентацияни овоз билан бошқариш")
+    ap.add_argument("files", nargs="*", metavar="ФАЙЛ",
+                    help="презентация файли: START.bat нинг устига судранг ёки номини ёзинг "
+                         "(йўлда пробел бўлса ҳам ишлайди)")
     ap.add_argument("--file", help="презентация файли (флешкани қидирмайди)")
     ap.add_argument("--watch", action="store_true", help="флешка уланишини фонда кутиш")
     ap.add_argument("--attach", action="store_true",
@@ -719,6 +732,9 @@ def main(argv=None) -> int:
     ap.add_argument("--word-check", help="сўзлар моделда борми: a,b,c ёки @файл.txt")
     ap.add_argument("--verbose", action="store_true", help="эшитилган ҳамма матнни кўрсатиш")
     args = ap.parse_args(argv)
+    if args.files and not args.file:
+        # Йўл тирноқсиз ёзилса cmd уни пробелдан бўлиб юборади ("MVP Presentation.pptx" -> 2 та бўлак)
+        args.file = " ".join(args.files).strip().strip('"')
 
     folder = home_dir()
     config = load_config(folder)
@@ -761,6 +777,11 @@ def main(argv=None) -> int:
             path = (find_presentation(root_dir(), config["preferred_names"])
                     or find_on_drives(config)
                     or wait_for_presentation(config))
+            others = other_presentations(path.parent, path)
+            if others and path.stem.lower() not in [n.lower() for n in config["preferred_names"]]:
+                log.warning("Папкада яна %d та презентация бор; энг янгиси танланди: %s. Керакли файлни "
+                            "START.bat нинг устига судранг ёки уни presentation.pptx деб номланг.",
+                            others, path.name)
         log.info("Презентация топилди: %s", path)
         return run_session(path, args, config, parser)
     except KeyboardInterrupt:

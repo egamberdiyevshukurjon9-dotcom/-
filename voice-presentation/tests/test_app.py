@@ -202,6 +202,41 @@ class MainTests(unittest.TestCase):
     def test_missing_file(self):
         self.assertEqual(pv.main(["--file", "/yo'q/fayl.pptx"]), 1)
 
+    def run_main_capturing_path(self, args):
+        captured = {}
+
+        def fake_session(path, *rest):
+            captured["path"] = path
+            return 0
+
+        with mock.patch.object(pv, "run_session", fake_session):
+            code = pv.main(args)
+        return code, captured.get("path")
+
+    def test_dragged_file_and_unquoted_path_with_spaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "MVP Presentation-MarlonLezama.pptx"
+            target.write_bytes(b"x")
+            # 1) судраб ташлаш: Windows йўлни тирноқда беради — битта аргумент
+            self.assertEqual(self.run_main_capturing_path([str(target)]), (0, target))
+            # 2) cmd да тирноқсиз ёзилган йўл пробелдан 2 бўлакка бўлинади (расмдаги хато)
+            parts = [str(Path(tmp) / "MVP"), "Presentation-MarlonLezama.pptx"]
+            self.assertEqual(self.run_main_capturing_path(parts), (0, target))
+            # 3) ортиқча тирноқлар
+            self.assertEqual(self.run_main_capturing_path(['"%s"' % target]), (0, target))
+            # 4) --file ҳамон ишлайди
+            self.assertEqual(self.run_main_capturing_path(["--file", str(target)]), (0, target))
+
+    def test_missing_dragged_file_is_reported(self):
+        self.assertEqual(pv.main(["C:\\yoq papka\\yoq fayl.pptx"]), 1)
+
+    def test_other_presentations_are_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("a.pptx", "b.ppsx", "~$a.pptx", "xat.docx"):
+                (root / name).write_bytes(b"x")
+            self.assertEqual(pv.other_presentations(root, root / "a.pptx"), 1)
+
     def test_word_check_without_models_is_a_clear_error(self):
         self.assertEqual(pv.main(["--word-check", "keyingi,oldingi"]), 1)
 
